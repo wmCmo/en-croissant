@@ -17,7 +17,7 @@ import {
 } from "@/state/atoms";
 import classes from "@/styles/Chessboard.module.css";
 import { positionFromFen } from "@/utils/chessops";
-import type { Completion, Puzzle } from "@/utils/puzzles";
+import type { Completion, CompletionDetail, Puzzle } from "@/utils/puzzles";
 import { getNodeAtPath, treeIteratorMainLine } from "@/utils/treeReducer";
 import PromotionModal from "../boards/PromotionModal";
 import { TreeStateContext } from "../common/TreeStateContext";
@@ -31,7 +31,7 @@ function PuzzleBoard({
 }: {
   puzzles: Puzzle[];
   currentPuzzle: number;
-  changeCompletion: (completion: Completion) => Promise<void>;
+  changeCompletion: (completion: Completion, detail?: CompletionDetail) => Promise<void>;
   generatePuzzle: (db: string) => Promise<void>;
   db: string | null;
 }) {
@@ -86,6 +86,12 @@ function PuzzleBoard({
     if (!pos) return;
     if (!puzzle) return;
 
+    // Mutates the shared puzzle object (as setPuzzles does) so the time is
+    // visible to changeCompletion without waiting for a re-render.
+    if (puzzle.completion === "incomplete" && puzzle.firstMoveAt === undefined) {
+      puzzle.firstMoveAt = Date.now();
+    }
+
     const newPos = pos.clone();
     const uci = makeUci(move);
     newPos.play(move);
@@ -116,7 +122,12 @@ function PuzzleBoard({
         changeHeaders: false,
       });
       if (!ended) {
-        await changeCompletion("incorrect");
+        await changeCompletion("incorrect", {
+          reason: "wrong_move",
+          wrongMove: uci,
+          expectedMove: puzzle.moves[currentMove],
+          failedAtPly: currentMove,
+        });
       }
       setEnded(true);
     }

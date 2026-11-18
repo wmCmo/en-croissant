@@ -17,6 +17,17 @@ export interface Puzzle {
     completion: Completion;
     timeSpent?: number;
     themes?: string[];
+    /** weakspot: when the puzzle was first shown (ms epoch) */
+    startedAt?: number;
+    /** weakspot: when the user made their first move (ms epoch) */
+    firstMoveAt?: number;
+}
+
+export interface CompletionDetail {
+    reason: "wrong_move" | "hint" | "solution";
+    wrongMove?: string;
+    expectedMove?: string;
+    failedAtPly?: number;
 }
 
 async function getPuzzleDatabase(name: string): Promise<PuzzleDatabaseInfo | null> {

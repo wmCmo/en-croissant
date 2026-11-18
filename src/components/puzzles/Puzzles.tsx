@@ -50,16 +50,23 @@ import {
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
 import { formatThemeLabel, formatTime } from "@/utils/format";
-import { type Completion, getPuzzleDatabases, type Puzzle } from "@/utils/puzzles";
+import {
+  type Completion,
+  type CompletionDetail,
+  getPuzzleDatabases,
+  type Puzzle,
+} from "@/utils/puzzles";
 import { createTab } from "@/utils/tabs";
 import { defaultTree } from "@/utils/treeReducer";
 import { unwrap } from "@/utils/unwrap";
+import { appendAttempt } from "@/utils/weakspotLog";
 import ChallengeHistory from "../common/ChallengeHistory";
 import ConfirmModal from "../common/ConfirmModal";
 import GameNotation from "../common/GameNotation";
 import MoveControls from "../common/MoveControls";
 import { TreeStateContext } from "../common/TreeStateContext";
 import AddPuzzle from "./AddPuzzle";
+import WeakspotStats from "./WeakspotStats";
 import PuzzleBoard from "./PuzzleBoard";
 
 function Puzzles({ id }: { id: string }) {
@@ -157,6 +164,7 @@ function Puzzles({ id }: { id: string }) {
       solutionAbortRef.current?.abort();
       setIsPlayingSolution(false);
       setCurrentPuzzle(nextIndex);
+      puzzles[nextIndex].startedAt ??= Date.now();
       setPuzzle(puzzles[nextIndex]);
       if (trackTime) {
         setTimerStart(Date.now() - (puzzles[nextIndex].timeSpent || 0));
@@ -181,6 +189,7 @@ function Puzzles({ id }: { id: string }) {
       ...puzzle,
       moves: puzzle.moves.split(" "),
       completion: "incomplete",
+      startedAt: Date.now(),
     };
     setPuzzles((puzzles) => {
       return [...puzzles, newPuzzle];
@@ -192,9 +201,12 @@ function Puzzles({ id }: { id: string }) {
     }
   }
 
-  async function changeCompletion(completion: Completion) {
-    const timeSpent = timerStart !== null ? Date.now() - timerStart : 0;
+  async function changeCompletion(completion: Completion, detail?: CompletionDetail) {
+    const now = Date.now();
+    const timeSpent = timerStart !== null ? now - timerStart : 0;
     const puzzle = puzzles[currentPuzzle];
+    // Log only the first resolution of a puzzle, not revisits.
+    const firstResolution = puzzle?.completion === "incomplete" && completion !== "incomplete";
     setPuzzles((puzzles) => {
       puzzles[currentPuzzle].completion = completion;
       puzzles[currentPuzzle].timeSpent = timeSpent;
@@ -202,14 +214,35 @@ function Puzzles({ id }: { id: string }) {
     });
     setTimerStart(null);
 
+    let themes: string[] = [];
     if (selectedDb && puzzle?.id) {
       const res = await commands.getThemesForPuzzle(selectedDb, puzzle.id);
       if (res.status === "ok") {
+        themes = res.data;
         setPuzzles((puzzles) => {
           puzzles[currentPuzzle].themes = res.data;
           return [...puzzles];
         });
       }
+    }
+
+    if (firstResolution && puzzle) {
+      const startedAt = puzzle.startedAt ?? now - timeSpent;
+      appendAttempt({
+        v: 1,
+        ts: new Date(now).toISOString(),
+        puzzleId: puzzle.id,
+        db: selectedDb?.split(/[\\/]/).pop() ?? "",
+        rating: puzzle.rating,
+        themes,
+        solved: completion === "correct",
+        failReason: completion === "correct" ? null : (detail?.reason ?? "wrong_move"),
+        wrongMove: detail?.wrongMove ?? null,
+        expectedMove: detail?.expectedMove ?? null,
+        failedAtPly: detail?.failedAtPly ?? null,
+        firstMoveMs: puzzle.firstMoveAt !== undefined ? puzzle.firstMoveAt - startedAt : null,
+        totalMs: now - startedAt,
+      }).catch((e) => console.error("weakspot: failed to log attempt", e));
     }
   }
 
@@ -367,6 +400,7 @@ function Puzzles({ id }: { id: string }) {
                   <IconTrash size={20} />
                 </ActionIcon>
               </Tooltip>
+              <WeakspotStats />
               <Tooltip label={t("SideBar.Settings")}>
                 <ActionIcon onClick={() => setSettingsOpened((o) => !o)}>
                   <IconSettings size={20} />
@@ -614,7 +648,7 @@ function Puzzles({ id }: { id: string }) {
                 const curPuzzle = puzzles[currentPuzzle];
 
                 if (curPuzzle.completion === "incomplete") {
-                  changeCompletion("incorrect");
+                  changeCompletion("incorrect", { reason: "hint" });
                 }
 
                 if (currentlyOnLastMoveOrNoLastMove()) return;
@@ -663,7 +697,7 @@ function Puzzles({ id }: { id: string }) {
 
                 const curPuzzle = puzzles[currentPuzzle];
                 if (curPuzzle.completion === "incomplete") {
-                  changeCompletion("incorrect");
+                  changeCompletion("incorrect", { reason: "solution" });
                 }
                 setIsPlayingSolution(true);
                 goToStart();

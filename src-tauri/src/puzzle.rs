@@ -18,16 +18,60 @@ fn is_legacy_database(path: &Path) -> Result<bool, std::io::Error> {
     Ok(&header == b"SQLite format 3\0")
 }
 
-fn open_database(path: &Path) -> Result<Connection, Error> {
+/// A puzzle database is either the current DuckDB format or the released
+/// SQLite format (same tables). Both are opened read-only; the SQLite file is
+/// never modified or deleted.
+enum PuzzleDb {
+    Duck(Connection),
+    Lite(rusqlite::Connection),
+}
+
+fn sqlite_error(error: rusqlite::Error) -> Error {
+    std::io::Error::other(format!("Legacy puzzle database: {error}")).into()
+}
+
+fn open_database(path: &Path) -> Result<PuzzleDb, Error> {
     if is_legacy_database(path)? {
-        return Err(std::io::Error::other(
-            "This puzzle database uses the old SQLite format. Download the latest DuckDB puzzle database.",
-        ).into());
+        return Ok(PuzzleDb::Lite(
+            rusqlite::Connection::open_with_flags(
+                path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .map_err(sqlite_error)?,
+        ));
     }
-    Ok(Connection::open_with_flags(
+    Ok(PuzzleDb::Duck(Connection::open_with_flags(
         path,
         Config::default().access_mode(AccessMode::ReadOnly)?,
-    )?)
+    )?))
+}
+
+/// Run a query returning one String column with optional params.
+fn query_strings(db: &PuzzleDb, sql: &str, id: Option<i32>) -> Result<Vec<String>, Error> {
+    match db {
+        PuzzleDb::Duck(conn) => {
+            let mut st = conn.prepare(sql)?;
+            let rows = match id {
+                Some(id) => st.query_map([id], |row| row.get(0))?.collect::<Result<_, _>>()?,
+                None => st.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?,
+            };
+            Ok(rows)
+        }
+        PuzzleDb::Lite(conn) => {
+            let mut st = conn.prepare(sql).map_err(sqlite_error)?;
+            let rows = match id {
+                Some(id) => st
+                    .query_map([id], |row| row.get(0))
+                    .map_err(sqlite_error)?
+                    .collect::<Result<_, _>>(),
+                None => st
+                    .query_map([], |row| row.get(0))
+                    .map_err(sqlite_error)?
+                    .collect::<Result<_, _>>(),
+            };
+            rows.map_err(sqlite_error)
+        }
+    }
 }
 
 static PUZZLE_CACHE: Lazy<Mutex<PuzzleCache>> = Lazy::new(|| Mutex::new(PuzzleCache::new()));
@@ -79,30 +123,50 @@ impl PuzzleCache {
                 );
             }
             query.push_str(" ORDER BY random() LIMIT 20");
-            let mut statement = db.prepare(&query)?;
-            let read_puzzle = |row: &duckdb::Row<'_>| {
-                Ok(Puzzle {
-                    id: row.get(0)?,
-                    fen: row.get(1)?,
-                    moves: row.get(2)?,
-                    rating: row.get(3)?,
-                    rating_deviation: row.get(4)?,
-                    popularity: row.get(5)?,
-                    nb_plays: row.get(6)?,
-                })
+            let (min, max) = (i32::from(min_rating), i32::from(max_rating));
+            self.cache = match &db {
+                PuzzleDb::Duck(conn) => {
+                    let mut statement = conn.prepare(&query)?;
+                    let read = |row: &duckdb::Row<'_>| {
+                        Ok(Puzzle {
+                            id: row.get(0)?,
+                            fen: row.get(1)?,
+                            moves: row.get(2)?,
+                            rating: row.get(3)?,
+                            rating_deviation: row.get(4)?,
+                            popularity: row.get(5)?,
+                            nb_plays: row.get(6)?,
+                        })
+                    };
+                    let rows = if let Some(theme_name) = theme {
+                        statement.query_map(params![min, max, theme_name], read)?
+                    } else {
+                        statement.query_map(params![min, max], read)?
+                    };
+                    rows.collect::<Result<_, _>>()?
+                }
+                PuzzleDb::Lite(conn) => {
+                    let mut statement = conn.prepare(&query).map_err(sqlite_error)?;
+                    let read = |row: &rusqlite::Row<'_>| {
+                        Ok(Puzzle {
+                            id: row.get(0)?,
+                            fen: row.get(1)?,
+                            moves: row.get(2)?,
+                            rating: row.get(3)?,
+                            rating_deviation: row.get(4)?,
+                            popularity: row.get(5)?,
+                            nb_plays: row.get(6)?,
+                        })
+                    };
+                    let rows = if let Some(theme_name) = theme {
+                        statement.query_map(rusqlite::params![min, max, theme_name], read)
+                    } else {
+                        statement.query_map(rusqlite::params![min, max], read)
+                    }
+                    .map_err(sqlite_error)?;
+                    rows.collect::<Result<_, _>>().map_err(sqlite_error)?
+                }
             };
-            let rows = if let Some(theme_name) = theme {
-                statement.query_map(
-                    params![i32::from(min_rating), i32::from(max_rating), theme_name],
-                    read_puzzle,
-                )?
-            } else {
-                statement.query_map(
-                    params![i32::from(min_rating), i32::from(max_rating)],
-                    read_puzzle,
-                )?
-            };
-            self.cache = rows.collect::<Result<_, _>>()?;
             self.file = file.to_owned();
             self.min_rating = min_rating;
             self.max_rating = max_rating;
@@ -147,17 +211,16 @@ pub async fn get_puzzle_db_info(file: PathBuf) -> Result<Option<PuzzleDatabaseIn
 }
 
 fn database_info(path: PathBuf) -> Result<Option<PuzzleDatabaseInfo>, Error> {
-    match is_legacy_database(&path) {
-        Ok(true) => {
-            delete_puzzle_database(path.to_string_lossy().into_owned())?;
-            return Ok(None);
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-        Ok(false) => {}
+    if !path.exists() {
+        return Ok(None);
     }
     let db = open_database(&path)?;
-    let puzzle_count = db.query_row("SELECT COUNT(*) FROM puzzles", [], |row| row.get(0))?;
+    let puzzle_count = match &db {
+        PuzzleDb::Duck(conn) => conn.query_row("SELECT COUNT(*) FROM puzzles", [], |row| row.get(0))?,
+        PuzzleDb::Lite(conn) => conn
+            .query_row("SELECT COUNT(*) FROM puzzles", [], |row| row.get(0))
+            .map_err(sqlite_error)?,
+    };
 
     let storage_size = path.metadata()?.len();
     let filename = path.file_name().expect("get filename").to_string_lossy();
@@ -190,23 +253,17 @@ pub fn delete_puzzle_database(file: String) -> Result<(), Error> {
 #[specta::specta]
 pub fn get_puzzle_themes(file: String) -> Result<Vec<String>, Error> {
     let db = open_database(Path::new(&file))?;
-    let mut statement = db.prepare("SELECT name FROM themes ORDER BY name")?;
-    let result = statement
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
-    Ok(result)
+    query_strings(&db, "SELECT name FROM themes ORDER BY name", None)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn get_themes_for_puzzle(file: String, puzzle_id: i32) -> Result<Vec<String>, Error> {
     let db = open_database(Path::new(&file))?;
-    let mut statement = db.prepare(
+    query_strings(
+        &db,
         "SELECT t.name FROM themes t JOIN puzzle_themes pt ON t.id = pt.theme_id
          WHERE pt.puzzle_id = ? ORDER BY t.name",
-    )?;
-    let result = statement
-        .query_map([puzzle_id], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
-    Ok(result)
+        Some(puzzle_id),
+    )
 }
