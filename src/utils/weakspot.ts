@@ -43,34 +43,38 @@ export function expectedScore(player: number, puzzle: number): number {
     return 1 / (1 + 10 ** ((puzzle - player) / 400));
 }
 
+export const START_RATING = 1400;
+/** Solve times are capped here so time away from the board doesn't count. */
+export const MAX_COUNTED_MS = 180_000;
+
 /**
- * Maximum-likelihood puzzle rating from attempts (Newton's method on the
- * Elo logistic). Returns null with no attempts; clamps when every attempt
- * was solved or failed (the MLE is unbounded then).
+ * Speed factor for a solve: full credit up to 30s, sliding to half credit at
+ * 120s or slower. Fails are not scaled.
  */
-export function estimateRating(
-    attempts: Pick<PuzzleAttempt, "rating" | "solved">[],
-): number | null {
-    if (attempts.length === 0) return null;
-    const mean = attempts.reduce((a, x) => a + x.rating, 0) / attempts.length;
-    const solved = attempts.filter((a) => a.solved).length;
-    if (solved === 0) return Math.round(mean - 400);
-    if (solved === attempts.length) return Math.round(mean + 400);
-    const k = Math.LN10 / 400;
-    let r = mean;
-    for (let i = 0; i < 50; i++) {
-        let grad = 0;
-        let hess = 0;
-        for (const a of attempts) {
-            const e = expectedScore(r, a.rating);
-            grad += (a.solved ? 1 : 0) - e;
-            hess += e * (1 - e);
-        }
-        const step = grad / (k * hess);
-        r += Math.max(-200, Math.min(200, step));
-        if (Math.abs(step) < 0.1) break;
-    }
-    return Math.round(Math.max(mean - 800, Math.min(mean + 800, r)));
+export function speedFactor(totalMs: number): number {
+    const s = Math.min(totalMs, MAX_COUNTED_MS) / 1000;
+    if (s <= 30) return 1;
+    if (s >= 120) return 0.5;
+    return 1 - (0.5 * (s - 30)) / 90;
+}
+
+/**
+ * Your puzzle rating, replayed from the log: an Elo update per attempt
+ * (K=40 for the first 30 attempts, then 20). Slow solves gain less; any fail
+ * loses the full expected score, so the rating can go down.
+ */
+export function playerRating(
+    attempts: Pick<PuzzleAttempt, "rating" | "solved" | "totalMs" | "ts">[],
+    start = START_RATING,
+): number {
+    const sorted = [...attempts].sort((a, b) => a.ts.localeCompare(b.ts));
+    let r = start;
+    sorted.forEach((a, i) => {
+        const k = i < 30 ? 40 : 20;
+        const e = expectedScore(r, a.rating);
+        r += a.solved ? k * (1 - e) * speedFactor(a.totalMs) : -k * e;
+    });
+    return Math.round(r);
 }
 
 function median(xs: number[]): number | null {
@@ -107,7 +111,8 @@ export interface ModelOptions {
 export interface WeaknessModel {
     attempts: number;
     overallRate: number;
-    rating: number | null;
+    /** your puzzle rating (Elo replay of the log) */
+    rating: number;
     themes: ThemeStat[];
 }
 
@@ -117,7 +122,7 @@ export function buildModel(attempts: PuzzleAttempt[], opts: ModelOptions = {}): 
     const minTrend = opts.minTrend ?? 6;
     const sorted = [...attempts].sort((a, b) => a.ts.localeCompare(b.ts));
     const overallRate = sorted.length ? sorted.filter((a) => a.solved).length / sorted.length : 0;
-    const rating = estimateRating(sorted);
+    const rating = playerRating(sorted);
 
     const byTheme = new Map<string, PuzzleAttempt[]>();
     for (const a of sorted) {
@@ -133,13 +138,10 @@ export function buildModel(attempts: PuzzleAttempt[], opts: ModelOptions = {}): 
     for (const [theme, list] of byTheme) {
         const n = list.length;
         const s = list.filter((a) => a.solved).length;
-        const residual =
-            rating === null
-                ? 0
-                : list.reduce(
-                      (acc, a) => acc + (a.solved ? 1 : 0) - expectedScore(rating, a.rating),
-                      0,
-                  );
+        const residual = list.reduce(
+            (acc, a) => acc + (a.solved ? 1 : 0) - expectedScore(rating, a.rating),
+            0,
+        );
         let trend: ThemeStat["trend"] = null;
         if (n >= minTrend) {
             const half = Math.floor(n / 2);
@@ -154,7 +156,9 @@ export function buildModel(attempts: PuzzleAttempt[], opts: ModelOptions = {}): 
             adjustedRate: (s + k * overallRate) / (n + k),
             vsExpected: residual / (n + k),
             avgRating: Math.round(list.reduce((acc, a) => acc + a.rating, 0) / n),
-            medianSolveMs: median(list.filter((a) => a.solved).map((a) => a.totalMs)),
+            medianSolveMs: median(
+                list.filter((a) => a.solved).map((a) => Math.min(a.totalMs, MAX_COUNTED_MS)),
+            ),
             trend,
         });
     }
@@ -175,4 +179,103 @@ export function parseAttemptLog(text: string): PuzzleAttempt[] {
         }
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Picking the next puzzle
+
+export type TrainerMode = "manual" | "adaptive" | "focus";
+
+/**
+ * Evaluation and phase tags: shown in stats, but too broad to drill
+ * ("crushing" is not a tactic you can practise).
+ */
+export const BROAD_THEMES = new Set([
+    "advantage",
+    "crushing",
+    "equality",
+    "mate",
+    "opening",
+    "middlegame",
+    "endgame",
+]);
+
+export interface NextPick {
+    theme: string | null;
+    range: [number, number];
+}
+
+const RATING_MIN = 600;
+const RATING_MAX = 2800;
+/** Ranges snap to this step so the Rust-side puzzle cache can be reused. */
+const RANGE_STEP = 50;
+
+export function ratingRange(center: number, below: number, above: number): [number, number] {
+    const snap = (x: number) => Math.round(x / RANGE_STEP) * RANGE_STEP;
+    const lo = Math.max(RATING_MIN, snap(center - below));
+    const hi = Math.min(RATING_MAX, Math.max(lo + 100, snap(center + above)));
+    return [lo, hi];
+}
+
+function drillable(t: ThemeStat, available: Set<string> | null) {
+    return !BROAD_THEMES.has(t.theme) && (!available || available.has(t.theme));
+}
+
+/**
+ * Themes that are weak and not getting better: at least `minAttempts`,
+ * adjusted rate below your overall rate, and the newer half no better than
+ * the older half (+5 points). Falls back to the weakest themes with 3+
+ * attempts when nothing qualifies yet.
+ */
+export function stubbornThemes(
+    model: WeaknessModel,
+    count = 3,
+    available: Set<string> | null = null,
+): string[] {
+    const pool = model.themes.filter((t) => drillable(t, available));
+    const stubborn = pool.filter(
+        (t) =>
+            t.trend !== null &&
+            t.adjustedRate < model.overallRate &&
+            t.trend.late <= t.trend.early + 0.05,
+    );
+    const fallback = pool.filter((t) => t.attempts >= 3 && !stubborn.includes(t));
+    // model.themes is already weakest-first
+    return [...stubborn, ...fallback].slice(0, count).map((t) => t.theme);
+}
+
+/**
+ * Adaptive: puzzles around your rating; with probability `weakShare` the
+ * theme is one of your 5 weakest drillable themes (weighted by how weak),
+ * otherwise any theme, which keeps exploring and collecting data.
+ *
+ * Focus: always one of the 2-3 stubborn themes, and slightly easier than
+ * your rating so there is time to calculate the whole line.
+ */
+export function pickNext(
+    model: WeaknessModel,
+    mode: Exclude<TrainerMode, "manual">,
+    available: Set<string> | null,
+    rand: () => number = Math.random,
+    weakShare = 0.6,
+): NextPick {
+    const r = model.rating;
+    if (mode === "focus") {
+        const focus = stubbornThemes(model, 3, available);
+        return {
+            theme: focus.length ? focus[Math.floor(rand() * focus.length)] : null,
+            range: ratingRange(r, 250, 50),
+        };
+    }
+    const range = ratingRange(r, 100, 100);
+    if (rand() >= weakShare) return { theme: null, range };
+    const weak = model.themes.filter((t) => drillable(t, available)).slice(0, 5);
+    if (weak.length === 0) return { theme: null, range };
+    const weights = weak.map((t) => 1 - t.adjustedRate + 0.05);
+    let x = rand() * weights.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < weak.length; i++) {
+        x -= weights[i];
+        if (x <= 0) return { theme: weak[i].theme, range };
+    }
+    return { theme: weak[weak.length - 1].theme, range };
 }

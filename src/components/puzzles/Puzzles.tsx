@@ -10,6 +10,7 @@ import {
   Paper,
   Portal,
   RangeSlider,
+  SegmentedControl,
   ScrollArea,
   Select,
   SimpleGrid,
@@ -31,7 +32,7 @@ import {
 import { isNormal, makeSquare, makeUci, parseUci } from "chessops";
 import { parseFen } from "chessops/fen";
 import { useAtom, useSetAtom } from "jotai";
-import { useContext, useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { commands, type PuzzleDatabaseInfo } from "@/bindings";
@@ -47,6 +48,7 @@ import {
   selectedPuzzleDbAtom,
   tabsAtom,
   trackPuzzleTimeAtom,
+  trainerModeAtom,
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
 import { formatThemeLabel, formatTime } from "@/utils/format";
@@ -59,7 +61,8 @@ import {
 import { createTab } from "@/utils/tabs";
 import { defaultTree } from "@/utils/treeReducer";
 import { unwrap } from "@/utils/unwrap";
-import { appendAttempt } from "@/utils/weakspotLog";
+import { buildModel, pickNext, type PuzzleAttempt, stubbornThemes } from "@/utils/weakspot";
+import { appendAttempt, readAttempts } from "@/utils/weakspotLog";
 import ChallengeHistory from "../common/ChallengeHistory";
 import ConfirmModal from "../common/ConfirmModal";
 import GameNotation from "../common/GameNotation";
@@ -97,6 +100,19 @@ function Puzzles({ id }: { id: string }) {
   }, [setSelectedDb]);
 
   const [ratingRange, setRatingRange] = useAtom(puzzleRatingRangeAtom);
+
+  // weakspot: the attempt log drives your rating and the next pick
+  const [trainerMode, setTrainerMode] = useAtom(trainerModeAtom);
+  const [attempts, setAttempts] = useState<PuzzleAttempt[] | null>(null);
+  useEffect(() => {
+    readAttempts()
+      .then(setAttempts)
+      .catch((e) => {
+        console.error("weakspot: failed to read attempts", e);
+        setAttempts([]);
+      });
+  }, []);
+  const model = useMemo(() => buildModel(attempts ?? []), [attempts]);
 
   const [selectedTheme, setSelectedTheme] = useAtom(puzzleThemeAtom);
   const [availableThemes, setAvailableThemes] = useState<string[]>([]);
@@ -176,14 +192,23 @@ function Puzzles({ id }: { id: string }) {
     setIsPlayingSolution(false);
 
     let range = ratingRange;
-    if (progressive) {
+    let theme = effectiveSelectedTheme;
+    if (trainerMode !== "manual") {
+      const pick = pickNext(model, trainerMode, new Set(availableThemes));
+      range = pick.range;
+      theme = pick.theme;
+    } else if (progressive) {
       const rating = puzzles[currentPuzzle]?.rating;
       if (rating) {
         range = [rating + 50, rating + 100];
         setRatingRange([rating + 50, rating + 100]);
       }
     }
-    const res = await commands.getPuzzle(db, range[0], range[1], effectiveSelectedTheme);
+    let res = await commands.getPuzzle(db, range[0], range[1], theme);
+    if (res.status === "error" && theme && trainerMode !== "manual") {
+      // no puzzles for that theme in range: fall back to any theme
+      res = await commands.getPuzzle(db, range[0], range[1], null);
+    }
     const puzzle = unwrap(res);
     const newPuzzle: Puzzle = {
       ...puzzle,
@@ -228,7 +253,7 @@ function Puzzles({ id }: { id: string }) {
 
     if (firstResolution && puzzle) {
       const startedAt = puzzle.startedAt ?? now - timeSpent;
-      appendAttempt({
+      const attempt: PuzzleAttempt = {
         v: 1,
         ts: new Date(now).toISOString(),
         puzzleId: puzzle.id,
@@ -242,7 +267,9 @@ function Puzzles({ id }: { id: string }) {
         failedAtPly: detail?.failedAtPly ?? null,
         firstMoveMs: puzzle.firstMoveAt !== undefined ? puzzle.firstMoveAt - startedAt : null,
         totalMs: now - startedAt,
-      }).catch((e) => console.error("weakspot: failed to log attempt", e));
+      };
+      setAttempts((prev) => [...(prev ?? []), attempt]);
+      appendAttempt(attempt).catch((e) => console.error("weakspot: failed to log attempt", e));
     }
   }
 
@@ -427,6 +454,28 @@ function Puzzles({ id }: { id: string }) {
                   )}
                   <div>
                     <Text size="sm" fw={500} mb={4}>
+                      Trainer
+                    </Text>
+                    <SegmentedControl
+                      fullWidth
+                      value={trainerMode}
+                      onChange={(v) => setTrainerMode(v as typeof trainerMode)}
+                      data={[
+                        { label: "Adaptive", value: "adaptive" },
+                        { label: "Focus", value: "focus" },
+                        { label: "Manual", value: "manual" },
+                      ]}
+                    />
+                    <Text size="xs" c="dimmed" mt={4}>
+                      {trainerMode === "adaptive"
+                        ? "Puzzles near your rating; 60% from your weakest themes."
+                        : trainerMode === "focus"
+                          ? "Only your 2-3 most stubborn themes, a bit below your rating."
+                          : "Rating range, theme and progressive mode as set below."}
+                    </Text>
+                  </div>
+                  <div>
+                    <Text size="sm" fw={500} mb={4}>
                       {t("Puzzle.RatingRange")}
                     </Text>
                     <RangeSlider
@@ -435,7 +484,7 @@ function Puzzles({ id }: { id: string }) {
                       max={2800}
                       value={ratingRange}
                       onChange={setRatingRange}
-                      disabled={progressive}
+                      disabled={progressive || trainerMode !== "manual"}
                       marks={[
                         { value: 600, label: "600" },
                         { value: 1700, label: "1700" },
@@ -454,12 +503,14 @@ function Puzzles({ id }: { id: string }) {
                     onChange={setSelectedTheme}
                     clearable
                     searchable
+                    disabled={trainerMode !== "manual"}
                   />
                   <SimpleGrid cols={2} spacing="sm">
                     <Switch
                       label={t("Puzzle.Progressive")}
                       description={t("Puzzle.Progressive.Desc")}
                       checked={progressive}
+                      disabled={trainerMode !== "manual"}
                       onChange={(event) => setProgressive(event.currentTarget.checked)}
                     />
                     <Switch
@@ -494,7 +545,26 @@ function Puzzles({ id }: { id: string }) {
               </Accordion.Panel>
             </Accordion.Item>
           </Accordion>
+          {trainerMode === "focus" && (
+            <Text size="sm" mb="xs" data-testid="weakspot-focus">
+              Focus:{" "}
+              <b>
+                {stubbornThemes(model, 3, new Set(availableThemes))
+                  .map(formatThemeLabel)
+                  .join(" · ") || "solve more puzzles first"}
+              </b>
+              . Calculate the whole line before you move.
+            </Text>
+          )}
           <Group grow>
+            <Paper withBorder p="xs">
+              <Text size="xs" c="dimmed">
+                Your rating
+              </Text>
+              <Text fw={700} size="lg" data-testid="weakspot-rating">
+                {attempts === null ? "-" : model.rating}
+              </Text>
+            </Paper>
             <Paper withBorder p="xs">
               <Text size="xs" c="dimmed">
                 {t("Puzzle.Rating")}

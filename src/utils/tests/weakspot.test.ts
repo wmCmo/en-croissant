@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
     buildModel,
-    estimateRating,
     expectedScore,
     parseAttemptLog,
+    pickNext,
+    playerRating,
+    ratingRange,
+    speedFactor,
+    stubbornThemes,
     type PuzzleAttempt,
 } from "../weakspot";
 
@@ -34,18 +38,20 @@ describe("expectedScore", () => {
     });
 });
 
-describe("estimateRating", () => {
-    it("returns null with no attempts", () => {
-        expect(estimateRating([])).toBeNull();
+describe("playerRating", () => {
+    it("starts at 1400 and goes down after fails, unlike progressive mode", () => {
+        expect(playerRating([])).toBe(1400);
+        const fails = [attempt([], false, 1600), attempt([], false, 1600)];
+        expect(playerRating(fails)).toBeLessThan(1400);
     });
-    it("lands on the puzzle rating at 50% success", () => {
-        const xs = [attempt([], true, 1500), attempt([], false, 1500)];
-        expect(estimateRating(xs)).toBe(1500);
-    });
-    it("rises with success rate and stays bounded when all solved", () => {
-        const three = [true, true, true, false].map((s) => attempt([], s, 1500));
-        expect(estimateRating(three)).toBeGreaterThan(1650);
-        expect(estimateRating([attempt([], true, 1500)])).toBe(1900);
+    it("gains less for a slow solve and ignores idle time beyond the cap", () => {
+        const fast = playerRating([attempt([], true, 1400, 10_000)]);
+        const slow = playerRating([attempt([], true, 1400, 150_000)]);
+        const idle = playerRating([attempt([], true, 1400, 1_275_306)]);
+        expect(fast).toBe(1420);
+        expect(slow).toBe(1410);
+        expect(idle).toBe(slow);
+        expect(speedFactor(60_000)).toBeCloseTo(0.833, 2);
     });
 });
 
@@ -96,5 +102,44 @@ describe("parseAttemptLog", () => {
         const a = attempt(["fork"], true);
         const text = `${JSON.stringify(a)}\n\n{"puzzleId": 3, "the\n${JSON.stringify(a)}\r\n`;
         expect(parseAttemptLog(text)).toHaveLength(2);
+    });
+});
+
+describe("ratingRange", () => {
+    it("snaps to 50s and clamps to the slider bounds", () => {
+        expect(ratingRange(1432, 100, 100)).toEqual([1350, 1550]);
+        expect(ratingRange(650, 250, 50)).toEqual([600, 700]);
+    });
+});
+
+describe("picker", () => {
+    // pin: weak and flat; fork: weak but improving; mateIn2: strong
+    const xs = [
+        ...[false, true, false, false, true, false].map((s) => attempt(["pin", "middlegame"], s)),
+        ...[false, false, false, true, true, true].map((s) => attempt(["fork"], s)),
+        ...Array.from({ length: 8 }, () => attempt(["mateIn2"], true)),
+    ];
+    const model = buildModel(xs);
+
+    it("focus picks stubborn themes first, never broad tags", () => {
+        const focus = stubbornThemes(model);
+        expect(focus[0]).toBe("pin");
+        expect(focus).not.toContain("middlegame");
+    });
+
+    it("focus mode drills a stubborn theme below your rating", () => {
+        const p = pickNext(model, "focus", null, () => 0);
+        expect(p.theme).toBe("pin");
+        expect(p.range[1]).toBeLessThanOrEqual(model.rating + 50);
+    });
+
+    it("adaptive mode explores when the roll is above the weak share", () => {
+        expect(pickNext(model, "adaptive", null, () => 0.99).theme).toBeNull();
+        expect(pickNext(model, "adaptive", null, () => 0).theme).toBe("pin");
+    });
+
+    it("only picks themes the database has", () => {
+        const p = pickNext(model, "adaptive", new Set(["mateIn2"]), () => 0);
+        expect(p.theme).toBe("mateIn2");
     });
 });

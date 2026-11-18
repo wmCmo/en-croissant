@@ -12,7 +12,7 @@ import {
 import { IconChartBar } from "@tabler/icons-react";
 import { useState } from "react";
 import { formatThemeLabel } from "@/utils/format";
-import { buildModel, type WeaknessModel } from "@/utils/weakspot";
+import { buildModel, stubbornThemes, type WeaknessModel } from "@/utils/weakspot";
 import { getAttemptLogPath, readAttempts } from "@/utils/weakspotLog";
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
@@ -65,9 +65,16 @@ function WeakspotStats() {
                 Solved: <b>{pct(model.overallRate)}</b>
               </Text>
               <Text size="sm">
-                Est. puzzle rating: <b>{model.rating ?? "–"}</b>
+                Your rating: <b>{model.rating ?? "–"}</b>
               </Text>
             </Group>
+            <Text size="sm">
+              Not improving (focus drill):{" "}
+              <b>
+                {stubbornThemes(model).map(formatThemeLabel).join(" · ") ||
+                  "not enough attempts yet"}
+              </b>
+            </Text>
             <Text size="xs" c="dimmed">
               Weakest first. "Adjusted" pulls themes with few attempts toward your overall rate; "vs
               expected" is solves per attempt above (+) or below (−) what your rating predicts for

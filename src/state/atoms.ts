@@ -393,6 +393,11 @@ export const puzzleRatingRangeAtom = atomWithStorage<[number, number]>(
 );
 
 export const puzzleThemeAtom = atomWithStorage<string | null>("puzzle-theme", null);
+/** weakspot: how the next puzzle is chosen */
+export const trainerModeAtom = atomWithStorage<"manual" | "adaptive" | "focus">(
+    "weakspot-mode",
+    "adaptive",
+);
 
 export const coverageMinGamesAtom = atomWithStorage<number>("coverage-min-games", 50);
 
