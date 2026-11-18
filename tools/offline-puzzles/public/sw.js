@@ -1,7 +1,7 @@
 // Network first (so a new pack or app version arrives when online), cache
 // fallback (so everything works on the plane). The API is never cached.
-const CACHE = "offline-puzzles-v1";
-const ASSETS = ["./", "index.html", "app.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "pack.json"];
+const CACHE = "offline-puzzles-v2";
+const ASSETS = ["./", "index.html", "app.js", "manifest.webmanifest", "pieces.css", "icon-192.png", "icon-512.png", "pack.json"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));

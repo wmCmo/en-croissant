@@ -18,3 +18,4 @@ En Croissant attempt log when the tablet can reach the PC again.
 Offline attempts are tagged `source: "offline"`: they count for your rating
 and theme stats, but their times (which include setting up the board) are
 not used for speed.
+Pieces: Staunty by sadsnake1, CC BY-NC-SA 4.0 (via lichess / En Croissant).

@@ -23,6 +23,7 @@ const TYPES = {
   ".json": "application/json; charset=utf-8",
   ".webmanifest": "application/manifest+json",
   ".png": "image/png",
+  ".css": "text/css; charset=utf-8",
 };
 
 function loggedIds() {

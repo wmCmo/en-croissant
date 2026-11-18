@@ -4,8 +4,10 @@
 
 const LS_PACK = "wsp-pack";
 const LS_RES = "wsp-results";
-const VS = "︎"; // force text (not emoji) glyphs
-const GLYPH = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
+// piece images come from pieces.css (En Croissant's Staunty set)
+const ROLE = { k: "king", q: "queen", r: "rook", b: "bishop", n: "knight", p: "pawn" };
+const COLOR = { w: "white", b: "black" };
+const pieceEl = (c, t) => el("span", { class: `pc ${ROLE[t]} ${COLOR[c]}` });
 const LETTER = { k: "K", q: "Q", r: "R", b: "B", n: "N", p: "" };
 const ORDER = "kqrbnp";
 
@@ -160,7 +162,7 @@ function askPromotion(done) {
   $promo.innerHTML = "";
   for (const t of "qrbn") {
     const b = document.createElement("button");
-    b.textContent = GLYPH[t] + VS;
+    b.append(pieceEl(cur.me, t));
     b.onclick = () => {
       $promo.classList.remove("show");
       done(t);
@@ -377,7 +379,7 @@ function renderBoard() {
       if (cur.sel === i) classes.push("sel");
       const sq = el("div", { class: classes.join(" "), "data-sq": name, onclick: () => onTap(i) });
       const p = cur.pos.b[i];
-      if (p) sq.append(el("span", { class: `pc ${p.c}` }, GLYPH[p.t] + VS));
+      if (p) sq.append(pieceEl(p.c, p.t));
       if (row === 7) sq.append(el("span", { class: "coord f" }, "abcdefgh"[file]));
       if (col === 0) sq.append(el("span", { class: "coord r" }, String(rank + 1)));
       board.append(sq);
