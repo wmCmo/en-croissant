@@ -28,3 +28,6 @@ tsconfig.tsbuildinfo
 *.sw?
 
 src-tauri/gen/
+
+# personal offline puzzle pack
+tools/offline-puzzles/public/pack.json

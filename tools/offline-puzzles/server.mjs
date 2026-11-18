@@ -1,0 +1,104 @@
+// Serves the offline puzzle PWA and receives results from the tablet.
+//
+//   node tools/offline-puzzles/server.mjs
+//
+// Binds 127.0.0.1 only; reach it from the tablet through Tailscale:
+//   tailscale serve --bg --https=8446 http://127.0.0.1:8771
+// Results are appended to the same attempt log En Croissant uses.
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { extname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = fileURLToPath(new URL(".", import.meta.url));
+const publicDir = join(here, "public");
+const PORT = Number(process.env.PORT ?? 8771);
+const LOG =
+  process.env.WEAKSPOT_LOG ??
+  join(process.env.APPDATA ?? "", "org.encroissant.app", "weakspot", "puzzle-attempts.jsonl");
+
+const TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".webmanifest": "application/manifest+json",
+  ".png": "image/png",
+};
+
+function loggedIds() {
+  if (!existsSync(LOG)) return new Set();
+  const ids = new Set();
+  for (const line of readFileSync(LOG, "utf8").split(/\r?\n/)) {
+    try {
+      ids.add(JSON.parse(line).puzzleId);
+    } catch {}
+  }
+  return ids;
+}
+
+function valid(a) {
+  return (
+    a &&
+    a.v === 1 &&
+    a.source === "offline" &&
+    Number.isInteger(a.puzzleId) &&
+    Number.isInteger(a.rating) &&
+    Array.isArray(a.themes) &&
+    typeof a.solved === "boolean" &&
+    typeof a.ts === "string" &&
+    typeof a.totalMs === "number"
+  );
+}
+
+function send(res, status, body, type = "application/json; charset=utf-8") {
+  res.writeHead(status, { "content-type": type, "cache-control": "no-cache" });
+  res.end(typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body));
+}
+
+createServer((req, res) => {
+  const url = new URL(req.url, "http://localhost");
+  if (req.method === "POST" && url.pathname === "/api/attempts") {
+    let body = "";
+    req.on("data", (c) => {
+      body += c;
+      if (body.length > 1e6) req.destroy();
+    });
+    req.on("end", () => {
+      let attempts;
+      try {
+        attempts = JSON.parse(body).attempts;
+      } catch {
+        return send(res, 400, { error: "bad json" });
+      }
+      if (!Array.isArray(attempts)) return send(res, 400, { error: "attempts must be an array" });
+      const ids = loggedIds();
+      const added = [];
+      const skipped = [];
+      let lines = "";
+      for (const a of attempts) {
+        // already logged (an earlier sync) counts as synced, not as an error
+        if (!valid(a) || ids.has(a.puzzleId)) {
+          skipped.push(a?.puzzleId);
+          continue;
+        }
+        ids.add(a.puzzleId);
+        added.push(a.puzzleId);
+        lines += `${JSON.stringify(a)}\n`;
+      }
+      if (lines) appendFileSync(LOG, lines);
+      console.log(`${new Date().toISOString()} sync: +${added.length}, skipped ${skipped.length}`);
+      send(res, 200, { added, skipped });
+    });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/health") {
+    return send(res, 200, { ok: true, logged: loggedIds().size });
+  }
+  if (req.method !== "GET") return send(res, 405, { error: "method" });
+  const rel = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1));
+  const file = normalize(join(publicDir, rel));
+  if (!file.startsWith(publicDir) || !existsSync(file)) return send(res, 404, { error: "not found" });
+  send(res, 200, readFileSync(file), TYPES[extname(file)] ?? "application/octet-stream");
+}).listen(PORT, "127.0.0.1", () => {
+  console.log(`offline puzzles on http://127.0.0.1:${PORT}  log: ${LOG}`);
+});

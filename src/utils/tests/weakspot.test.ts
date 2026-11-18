@@ -52,6 +52,9 @@ describe("playerRating", () => {
         expect(slow).toBe(1410);
         expect(idle).toBe(slow);
         expect(speedFactor(60_000)).toBeCloseTo(0.833, 2);
+        // offline (physical board) times include setup: full credit
+        const offline = playerRating([{ ...attempt([], true, 1400, 150_000), source: "offline" }]);
+        expect(offline).toBe(fast);
     });
 });
 

@@ -27,6 +27,11 @@ export interface PuzzleAttempt {
     /** Lichess puzzle id and source game URL (null if the link sidecar is missing) */
     lichessId?: string | null;
     gameUrl?: string | null;
+    /**
+     * "offline": solved on a physical board from the offline pack; times
+     * include setting up the board, so they don't affect rating or speed.
+     */
+    source?: "app" | "offline";
 }
 
 /** Lichess source/length tags that describe the puzzle, not a tactic. */
@@ -67,7 +72,7 @@ export function speedFactor(totalMs: number): number {
  * loses the full expected score, so the rating can go down.
  */
 export function playerRating(
-    attempts: Pick<PuzzleAttempt, "rating" | "solved" | "totalMs" | "ts">[],
+    attempts: Pick<PuzzleAttempt, "rating" | "solved" | "totalMs" | "ts" | "source">[],
     start = START_RATING,
 ): number {
     const sorted = [...attempts].sort((a, b) => a.ts.localeCompare(b.ts));
@@ -75,7 +80,8 @@ export function playerRating(
     sorted.forEach((a, i) => {
         const k = i < 30 ? 40 : 20;
         const e = expectedScore(r, a.rating);
-        r += a.solved ? k * (1 - e) * speedFactor(a.totalMs) : -k * e;
+        const speed = a.source === "offline" ? 1 : speedFactor(a.totalMs);
+        r += a.solved ? k * (1 - e) * speed : -k * e;
     });
     return Math.round(r);
 }
@@ -171,7 +177,9 @@ export function buildModel(attempts: PuzzleAttempt[], opts: ModelOptions = {}): 
             vsExpected: residual / (n + k),
             avgRating: Math.round(list.reduce((acc, a) => acc + a.rating, 0) / n),
             medianSolveMs: median(
-                list.filter((a) => a.solved).map((a) => Math.min(a.totalMs, MAX_COUNTED_MS)),
+                list
+                    .filter((a) => a.solved && a.source !== "offline")
+                    .map((a) => Math.min(a.totalMs, MAX_COUNTED_MS)),
             ),
             trend,
         });
