@@ -177,6 +177,8 @@ fn main() {
             get_puzzle_db_info,
             get_puzzle_themes,
             get_themes_for_puzzle,
+            puzzle::get_puzzle_link,
+            puzzle::count_puzzles,
             delete_puzzle_database,
             start_game,
             get_game_state,

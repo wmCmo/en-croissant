@@ -411,6 +411,29 @@ async getThemesForPuzzle(file: string, puzzleId: number) : Promise<Result<string
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Lichess puzzle id and source game for a puzzle; None when the sidecar
+ * is missing or has no row for it.
+ */
+async getPuzzleLink(file: string, puzzleId: number) : Promise<Result<PuzzleLink | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_puzzle_link", { file, puzzleId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Number of puzzles in a rating range (and theme), for the usage gauge.
+ */
+async countPuzzles(file: string, minRating: number, maxRating: number, theme: string | null) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("count_puzzles", { file, minRating, maxRating, theme }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async deletePuzzleDatabase(file: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_puzzle_database", { file }) };
@@ -558,6 +581,7 @@ export type ProgressEvent = { id: string; progress: number; finished: boolean }
 export type ProgressItem = { id: string; progress: number; finished: boolean }
 export type Puzzle = { id: number; fen: string; moves: string; rating: number; rating_deviation: number; popularity: number; nb_plays: number }
 export type PuzzleDatabaseInfo = { title: string; description: string; puzzleCount: number; storageSize: bigint; path: string }
+export type PuzzleLink = { lichessId: string; gameUrl: string }
 export type QueryOptions<SortT> = { skipCount: boolean; page?: number | null; pageSize?: number | null; sort: SortT; direction: SortDirection }
 export type QueryResponse<T> = { data: T; count: number | null }
 export type Score = { value: ScoreValue; 

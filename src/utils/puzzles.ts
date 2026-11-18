@@ -21,6 +21,8 @@ export interface Puzzle {
     startedAt?: number;
     /** weakspot: when the user made their first move (ms epoch) */
     firstMoveAt?: number;
+    /** weakspot: Lichess puzzle id and source game, when the link sidecar exists */
+    link?: { lichessId: string; gameUrl: string } | null;
 }
 
 export interface CompletionDetail {

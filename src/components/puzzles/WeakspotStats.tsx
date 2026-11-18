@@ -3,6 +3,7 @@ import {
   Badge,
   Group,
   Modal,
+  Progress,
   ScrollArea,
   Stack,
   Table,
@@ -11,19 +12,30 @@ import {
 } from "@mantine/core";
 import { IconChartBar } from "@tabler/icons-react";
 import { useState } from "react";
+import { commands } from "@/bindings";
 import { formatThemeLabel } from "@/utils/format";
-import { buildModel, stubbornThemes, type WeaknessModel } from "@/utils/weakspot";
-import { getAttemptLogPath, readAttempts } from "@/utils/weakspotLog";
+import {
+  buildModel,
+  type PuzzleAttempt,
+  ratingRange,
+  stubbornThemes,
+  type WeaknessModel,
+} from "@/utils/weakspot";
+import { getAttemptLogPath } from "@/utils/weakspotLog";
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
+const signed = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
 
 function Trend({ trend }: { trend: { early: number; late: number } | null }) {
   if (!trend) return <Text c="dimmed">–</Text>;
   const delta = trend.late - trend.early;
+  // trend values are solves above/below expected per puzzle (difficulty-adjusted)
   const color = delta > 0.1 ? "teal" : delta < -0.1 ? "red" : "gray";
   const label = delta > 0.1 ? "improving" : delta < -0.1 ? "worse" : "flat";
   return (
-    <Tooltip label={`${pct(trend.early)} → ${pct(trend.late)} (older half → newer half)`}>
+    <Tooltip
+      label={`vs expected: ${signed(trend.early)} → ${signed(trend.late)} (older half → newer half)`}
+    >
       <Badge color={color} variant="light" size="sm">
         {label}
       </Badge>
@@ -31,16 +43,80 @@ function Trend({ trend }: { trend: { early: number; late: number } | null }) {
   );
 }
 
-function WeakspotStats() {
+interface UsageRow {
+  label: string;
+  used: number;
+  total: number;
+}
+
+/** 消費 gauge: how much of each pool you have used up. */
+async function usage(db: string, attempts: PuzzleAttempt[], model: WeaknessModel) {
+  const ids = new Map(attempts.map((a) => [a.puzzleId, a]));
+  const seen = [...ids.values()];
+  const [lo, hi] = ratingRange(model.rating, 100, 100);
+  const count = async (min: number, max: number, theme: string | null) => {
+    const r = await commands.countPuzzles(db, min, max, theme);
+    return r.status === "ok" ? r.data : 0;
+  };
+  const inRange = (a: PuzzleAttempt) => a.rating >= lo && a.rating <= hi;
+  const focus = stubbornThemes(model);
+  const rows: UsageRow[] = [
+    { label: "Whole database", used: seen.length, total: await count(0, 4000, null) },
+    {
+      label: `Near your rating (${lo}–${hi})`,
+      used: seen.filter(inRange).length,
+      total: await count(lo, hi, null),
+    },
+  ];
+  for (const theme of focus) {
+    rows.push({
+      label: `${formatThemeLabel(theme)} near your rating`,
+      used: seen.filter((a) => inRange(a) && a.themes.includes(theme)).length,
+      total: await count(lo, hi, theme),
+    });
+  }
+  return rows;
+}
+
+function UsageGauge({ rows }: { rows: UsageRow[] }) {
+  return (
+    <Stack gap={6}>
+      <Text size="sm" fw={600}>
+        Puzzles used
+      </Text>
+      {rows.map((r) => {
+        const share = r.total > 0 ? r.used / r.total : 0;
+        return (
+          <div key={r.label} data-testid="weakspot-usage">
+            <Group justify="space-between" gap="xs">
+              <Text size="xs">{r.label}</Text>
+              <Text size="xs" c="dimmed">
+                {r.used.toLocaleString()} / {r.total.toLocaleString()} (
+                {share < 0.001 ? (share * 100).toFixed(3) : (share * 100).toFixed(1)}%)
+              </Text>
+            </Group>
+            {/* min 0.5% so a sliver is visible even when barely started */}
+            <Progress value={r.used > 0 ? Math.max(share * 100, 0.5) : 0} size="sm" />
+          </div>
+        );
+      })}
+    </Stack>
+  );
+}
+
+function WeakspotStats({ db, attempts }: { db: string | null; attempts: PuzzleAttempt[] }) {
   const [opened, setOpened] = useState(false);
   const [model, setModel] = useState<WeaknessModel | null>(null);
+  const [rows, setRows] = useState<UsageRow[] | null>(null);
   const [path, setPath] = useState("");
 
   async function open() {
     setOpened(true);
-    const [attempts, logPath] = await Promise.all([readAttempts(), getAttemptLogPath()]);
-    setModel(buildModel(attempts));
-    setPath(logPath);
+    setRows(null);
+    const m = buildModel(attempts);
+    setModel(m);
+    setPath(await getAttemptLogPath());
+    if (db) setRows(await usage(db, attempts, m));
   }
 
   return (
@@ -75,6 +151,14 @@ function WeakspotStats() {
                   "not enough attempts yet"}
               </b>
             </Text>
+            {db &&
+              (rows ? (
+                <UsageGauge rows={rows} />
+              ) : (
+                <Text size="xs" c="dimmed">
+                  Counting puzzles…
+                </Text>
+              ))}
             <Text size="xs" c="dimmed">
               Weakest first. "Adjusted" pulls themes with few attempts toward your overall rate; "vs
               expected" is solves per attempt above (+) or below (−) what your rating predicts for

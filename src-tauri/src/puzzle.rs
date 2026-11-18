@@ -267,3 +267,84 @@ pub fn get_themes_for_puzzle(file: String, puzzle_id: i32) -> Result<Vec<String>
         Some(puzzle_id),
     )
 }
+
+/// Sidecar file next to a puzzle database, built by
+/// `scripts/build-puzzle-links.py` from the Lichess puzzle export. Kept
+/// separate so the puzzle database itself is never modified.
+fn links_path(file: &str) -> PathBuf {
+    let path = Path::new(file);
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!("{stem}.links.sqlite"))
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PuzzleLink {
+    lichess_id: String,
+    game_url: String,
+}
+
+/// Lichess puzzle id and source game for a puzzle; None when the sidecar
+/// is missing or has no row for it.
+#[tauri::command]
+#[specta::specta]
+pub fn get_puzzle_link(file: String, puzzle_id: i32) -> Result<Option<PuzzleLink>, Error> {
+    let path = links_path(&file);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(sqlite_error)?;
+    let result = conn.query_row(
+        "SELECT lichess_id, game_url FROM links WHERE puzzle_id = ?",
+        [puzzle_id],
+        |row| {
+            Ok(PuzzleLink {
+                lichess_id: row.get(0)?,
+                game_url: row.get(1)?,
+            })
+        },
+    );
+    match result {
+        Ok(link) => Ok(Some(link)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(sqlite_error(e)),
+    }
+}
+
+/// Number of puzzles in a rating range (and theme), for the usage gauge.
+#[tauri::command]
+#[specta::specta]
+pub fn count_puzzles(
+    file: String,
+    min_rating: u16,
+    max_rating: u16,
+    theme: Option<String>,
+) -> Result<i32, Error> {
+    let db = open_database(Path::new(&file))?;
+    let query = if theme.is_some() {
+        "SELECT COUNT(*) FROM puzzle_themes pt JOIN puzzles p ON p.id = pt.puzzle_id
+         WHERE pt.theme_id = (SELECT id FROM themes WHERE name = ?)
+           AND p.rating BETWEEN ? AND ?"
+    } else {
+        "SELECT COUNT(*) FROM puzzles p WHERE p.rating BETWEEN ? AND ?"
+    };
+    let (min, max) = (i32::from(min_rating), i32::from(max_rating));
+    Ok(match (&db, &theme) {
+        (PuzzleDb::Duck(c), Some(t)) => {
+            let n: i64 = c.query_row(query, params![t, min, max], |r| r.get(0))?;
+            n as i32
+        }
+        (PuzzleDb::Duck(c), None) => {
+            let n: i64 = c.query_row(query, params![min, max], |r| r.get(0))?;
+            n as i32
+        }
+        (PuzzleDb::Lite(c), Some(t)) => c
+            .query_row(query, rusqlite::params![t, min, max], |r| r.get(0))
+            .map_err(sqlite_error)?,
+        (PuzzleDb::Lite(c), None) => c
+            .query_row(query, rusqlite::params![min, max], |r| r.get(0))
+            .map_err(sqlite_error)?,
+    })
+}

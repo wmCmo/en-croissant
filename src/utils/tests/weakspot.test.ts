@@ -83,8 +83,21 @@ describe("buildModel", () => {
     it("reports a first-half vs second-half trend once there are enough attempts", () => {
         const xs = [false, false, false, true, true, true].map((s) => attempt(["skewer"], s));
         const t = buildModel(xs).themes[0];
-        expect(t.trend).toEqual({ early: 0, late: 1 });
+        // same puzzle rating, 0 -> 3 solves: residual rises by exactly 1
+        expect(t.trend!.late - t.trend!.early).toBeCloseTo(1);
+        expect(t.trend!.early).toBeLessThan(0);
         expect(buildModel(xs.slice(0, 5)).themes[0].trend).toBeNull();
+    });
+
+    it("does not call a theme worse just because later puzzles were harder", () => {
+        // older half: easy and all solved; newer half: hard, 2 of 3 solved
+        const xs = [
+            ...[true, true, true].map((s) => attempt(["pin"], s, 1000)),
+            ...[true, false, true].map((s) => attempt(["pin"], s, 1900)),
+        ];
+        const t = buildModel(xs).themes[0];
+        expect(t.rate).toBeCloseTo(5 / 6);
+        expect(t.trend!.late).toBeGreaterThan(t.trend!.early);
     });
 
     it("median solve time ignores failed attempts", () => {

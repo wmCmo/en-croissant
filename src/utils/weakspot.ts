@@ -24,6 +24,9 @@ export interface PuzzleAttempt {
     firstMoveMs: number | null;
     /** ms from puzzle shown to solved / failed */
     totalMs: number;
+    /** Lichess puzzle id and source game URL (null if the link sidecar is missing) */
+    lichessId?: string | null;
+    gameUrl?: string | null;
 }
 
 /** Lichess source/length tags that describe the puzzle, not a tactic. */
@@ -96,7 +99,11 @@ export interface ThemeStat {
     vsExpected: number;
     avgRating: number;
     medianSolveMs: number | null;
-    /** success rate of the older half and newer half of attempts; null if < minTrend attempts */
+    /**
+     * Difficulty-adjusted trend: mean (solved - expected) of the older half and
+     * the newer half of attempts, both against your current rating, so harder
+     * puzzles later on don't read as getting worse. null if < minTrend attempts.
+     */
     trend: { early: number; late: number } | null;
 }
 
@@ -145,8 +152,15 @@ export function buildModel(attempts: PuzzleAttempt[], opts: ModelOptions = {}): 
         let trend: ThemeStat["trend"] = null;
         if (n >= minTrend) {
             const half = Math.floor(n / 2);
-            const rateOf = (xs: PuzzleAttempt[]) => xs.filter((a) => a.solved).length / xs.length;
-            trend = { early: rateOf(list.slice(0, half)), late: rateOf(list.slice(n - half)) };
+            const residualOf = (xs: PuzzleAttempt[]) =>
+                xs.reduce(
+                    (acc, a) => acc + (a.solved ? 1 : 0) - expectedScore(rating, a.rating),
+                    0,
+                ) / xs.length;
+            trend = {
+                early: residualOf(list.slice(0, half)),
+                late: residualOf(list.slice(n - half)),
+            };
         }
         themes.push({
             theme,

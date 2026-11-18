@@ -35,6 +35,7 @@ import { useAtom, useSetAtom } from "jotai";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { commands, type PuzzleDatabaseInfo } from "@/bindings";
 import {
   activeTabAtom,
@@ -204,10 +205,19 @@ function Puzzles({ id }: { id: string }) {
         setRatingRange([rating + 50, rating + 100]);
       }
     }
-    let res = await commands.getPuzzle(db, range[0], range[1], theme);
+    // Skip puzzles already attempted (logged) or already in this session.
+    const seen = new Set([...(attempts ?? []).map((a) => a.puzzleId), ...puzzles.map((p) => p.id)]);
+    const fetchUnseen = async (th: string | null) => {
+      let r = await commands.getPuzzle(db, range[0], range[1], th);
+      for (let i = 0; i < 10 && r.status === "ok" && seen.has(r.data.id); i++) {
+        r = await commands.getPuzzle(db, range[0], range[1], th);
+      }
+      return r;
+    };
+    let res = await fetchUnseen(theme);
     if (res.status === "error" && theme && trainerMode !== "manual") {
       // no puzzles for that theme in range: fall back to any theme
-      res = await commands.getPuzzle(db, range[0], range[1], null);
+      res = await fetchUnseen(null);
     }
     const puzzle = unwrap(res);
     const newPuzzle: Puzzle = {
@@ -240,15 +250,19 @@ function Puzzles({ id }: { id: string }) {
     setTimerStart(null);
 
     let themes: string[] = [];
+    let link: Puzzle["link"] = null;
     if (selectedDb && puzzle?.id) {
-      const res = await commands.getThemesForPuzzle(selectedDb, puzzle.id);
-      if (res.status === "ok") {
-        themes = res.data;
-        setPuzzles((puzzles) => {
-          puzzles[currentPuzzle].themes = res.data;
-          return [...puzzles];
-        });
-      }
+      const [res, linkRes] = await Promise.all([
+        commands.getThemesForPuzzle(selectedDb, puzzle.id),
+        commands.getPuzzleLink(selectedDb, puzzle.id),
+      ]);
+      if (res.status === "ok") themes = res.data;
+      if (linkRes.status === "ok") link = linkRes.data;
+      setPuzzles((puzzles) => {
+        puzzles[currentPuzzle].themes = themes;
+        puzzles[currentPuzzle].link = link;
+        return [...puzzles];
+      });
     }
 
     if (firstResolution && puzzle) {
@@ -267,6 +281,8 @@ function Puzzles({ id }: { id: string }) {
         failedAtPly: detail?.failedAtPly ?? null,
         firstMoveMs: puzzle.firstMoveAt !== undefined ? puzzle.firstMoveAt - startedAt : null,
         totalMs: now - startedAt,
+        lichessId: link?.lichessId ?? null,
+        gameUrl: link?.gameUrl ?? null,
       };
       setAttempts((prev) => [...(prev ?? []), attempt]);
       appendAttempt(attempt).catch((e) => console.error("weakspot: failed to log attempt", e));
@@ -427,7 +443,7 @@ function Puzzles({ id }: { id: string }) {
                   <IconTrash size={20} />
                 </ActionIcon>
               </Tooltip>
-              <WeakspotStats />
+              <WeakspotStats db={selectedDb} attempts={attempts ?? []} />
               <Tooltip label={t("SideBar.Settings")}>
                 <ActionIcon onClick={() => setSettingsOpened((o) => !o)}>
                   <IconSettings size={20} />
@@ -631,6 +647,26 @@ function Puzzles({ id }: { id: string }) {
                   {formatThemeLabel(theme)}
                 </Badge>
               ))}
+            </Group>
+          )}
+          {!isPuzzleIncomplete && puzzles[currentPuzzle]?.link && (
+            <Group gap="xs" mb="sm">
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                onClick={() => openUrl(puzzles[currentPuzzle].link!.gameUrl)}
+              >
+                Source game
+              </Button>
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                onClick={() =>
+                  openUrl(`https://lichess.org/training/${puzzles[currentPuzzle].link!.lichessId}`)
+                }
+              >
+                Lichess puzzle
+              </Button>
             </Group>
           )}
           <Group justify="space-between">
