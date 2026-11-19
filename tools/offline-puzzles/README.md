@@ -15,6 +15,12 @@ En Croissant attempt log when the tablet can reach the PC again.
    online and install it (Add to Home screen). The list shows
    "saved for offline" when the pack is cached.
 
+When a sync leaves every puzzle of the current pack logged, the server
+builds a fresh pack (same picker, current rating and weak spots; env
+`PACK_COUNT` / `PACK_FOCUS`), and the tablet switches to it right after that
+sync or the next time it opens online. `OFFLINE_PACK` overrides the pack
+path (for testing).
+
 Offline attempts are tagged `source: "offline"`: they count for your rating
 and theme stats, but their times (which include setting up the board) are
 not used for speed.

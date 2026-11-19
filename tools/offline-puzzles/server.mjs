@@ -4,7 +4,10 @@
 //
 // Binds 127.0.0.1 only; reach it from the tablet through Tailscale:
 //   tailscale serve --bg --https=8446 http://127.0.0.1:8771
-// Results are appended to the same attempt log En Croissant uses.
+// Results are appended to the same attempt log En Croissant uses. When a
+// sync leaves every puzzle of the current pack logged, a fresh pack is built
+// (make-pack.mts) so the tablet picks it up next time it is online.
+import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, normalize } from "node:path";
@@ -16,6 +19,39 @@ const PORT = Number(process.env.PORT ?? 8771);
 const LOG =
   process.env.WEAKSPOT_LOG ??
   join(process.env.APPDATA ?? "", "org.encroissant.app", "weakspot", "puzzle-attempts.jsonl");
+const PACK = process.env.OFFLINE_PACK ?? join(publicDir, "pack.json");
+const PACK_ARGS = ["--count", process.env.PACK_COUNT ?? "40", "--focus", process.env.PACK_FOCUS ?? "10"];
+
+function readPack() {
+  try {
+    return JSON.parse(readFileSync(PACK, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+let building = null;
+/** Build a new pack if every puzzle in the current one is logged. Returns the pack id in use. */
+function refillIfFinished(ids) {
+  const pack = readPack();
+  const finished = !pack || pack.puzzles.every((p) => ids.has(p.id));
+  if (!finished) return Promise.resolve(pack.id);
+  building ??= new Promise((resolve) => {
+    const script = join(here, "make-pack.mts");
+    execFile(
+      process.execPath,
+      [script, ...PACK_ARGS, "--log", LOG, "--out", PACK],
+      { timeout: 120_000 },
+      (err, stdout, stderr) => {
+        if (err) console.error("refill failed:", err.message, stderr);
+        else console.log(`${new Date().toISOString()} refill: ${stdout.trim().split("\n")[0]}`);
+        building = null;
+        resolve(readPack()?.id ?? null);
+      },
+    );
+  });
+  return building;
+}
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -88,7 +124,7 @@ createServer((req, res) => {
       }
       if (lines) appendFileSync(LOG, lines);
       console.log(`${new Date().toISOString()} sync: +${added.length}, skipped ${skipped.length}`);
-      send(res, 200, { added, skipped });
+      refillIfFinished(ids).then((packId) => send(res, 200, { added, skipped, packId }));
     });
     return;
   }
@@ -96,6 +132,9 @@ createServer((req, res) => {
     return send(res, 200, { ok: true, logged: loggedIds().size });
   }
   if (req.method !== "GET") return send(res, 405, { error: "method" });
+  if (url.pathname === "/pack.json") {
+    return existsSync(PACK) ? send(res, 200, readFileSync(PACK), TYPES[".json"]) : send(res, 404, { error: "no pack" });
+  }
   const rel = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1));
   const file = normalize(join(publicDir, rel));
   if (!file.startsWith(publicDir) || !existsSync(file)) return send(res, 404, { error: "not found" });

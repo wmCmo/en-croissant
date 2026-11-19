@@ -281,11 +281,13 @@ async function sync() {
       body: JSON.stringify({ attempts: pending.map((r) => r.attempt) }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const { added, skipped } = await res.json();
+    const { added, skipped, packId } = await res.json();
     const done = new Set([...added, ...skipped]);
     for (const r of pending) if (done.has(r.attempt.puzzleId)) r.synced = true;
     save(LS_RES, results);
     syncNote = `Synced ${added.length} at ${new Date().toLocaleTimeString()}`;
+    // the server builds a new pack once the current one is fully logged
+    if (packId && packId !== pack.id) await loadPack();
   } catch {
     syncNote = `${pending.length} waiting to sync (no connection to PC)`;
   } finally {
@@ -430,20 +432,25 @@ function renderPuzzle() {
 }
 
 // ---- boot ----
-async function boot() {
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(console.error);
+async function loadPack() {
   try {
     const res = await fetch("pack.json", { cache: "no-cache" });
-    if (res.ok) {
-      const fresh = await res.json();
-      if (!pack || fresh.id !== pack.id) {
-        pack = fresh;
-        save(LS_PACK, pack);
-      }
+    if (!res.ok) return;
+    const fresh = await res.json();
+    if (!pack || fresh.id !== pack.id) {
+      const done = pack ? pack.puzzles.filter((p) => results[p.id]?.attempt).length : 0;
+      pack = fresh;
+      save(LS_PACK, pack);
+      if (done) syncNote += ` · new pack of ${pack.puzzles.length} loaded`;
     }
   } catch {
-    // offline: use the stored pack
+    // offline: keep the stored pack
   }
+}
+
+async function boot() {
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(console.error);
+  await loadPack();
   render();
   sync();
 }
