@@ -345,11 +345,7 @@ async function checkPairing() {
   if (!relayCfg?.device) return;
   try {
     const res = await relayFetch("/whoami");
-    if (res.ok) {
-      pairCode = null;
-      save(LS_PAIR, null);
-      return;
-    }
+    if (res.ok) return clearPairing();
     if (res.status !== 401) return;
     const saved = load(LS_PAIR, null);
     if (saved && Date.now() - saved.at < 50 * 60 * 1000) {
@@ -368,6 +364,12 @@ async function checkPairing() {
   } catch {
     // offline: try again next time
   }
+}
+
+function clearPairing() {
+  if (!pairCode) return;
+  pairCode = null;
+  save(LS_PAIR, null);
 }
 
 async function recheckPairing() {
@@ -398,6 +400,7 @@ async function syncViaRelay(pending) {
       body: JSON.stringify({ attempts: pending.map((r) => r.attempt) }),
     });
     if (!res.ok) return false;
+    clearPairing(); // the relay took our key, so we are paired
     const accepted = new Set((await res.json()).accepted);
     for (const r of pending) if (accepted.has(r.attempt.puzzleId)) r.synced = true;
     save(LS_RES, results);
@@ -437,7 +440,10 @@ async function pullDone() {
   if (relayCfg) {
     try {
       const res = await relayFetch("/state");
-      if (res.ok) state = await res.json();
+      if (res.ok) {
+        clearPairing();
+        state = await res.json();
+      }
     } catch {}
   }
   if (!state?.packId) {
