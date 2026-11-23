@@ -390,6 +390,65 @@ function renderBoard() {
   return board;
 }
 
+// FEN of the position you solve from (after the opponent's first move), so a
+// PGN can start there on Lichess. Castling rights drop when the king or rook
+// has left its square; en passant only after a double pawn push.
+function startFen(p) {
+  const [, , castling = "-", , half = "0", full = "1"] = p.fen.split(" ");
+  const before = parseFen(p.fen);
+  const pos = applyUci(before, p.moves[0]);
+  const rows = [];
+  for (let r = 7; r >= 0; r--) {
+    let row = "";
+    let empty = 0;
+    for (let f = 0; f < 8; f++) {
+      const pc = pos.b[r * 8 + f];
+      if (!pc) { empty++; continue; }
+      if (empty) { row += empty; empty = 0; }
+      row += pc.c === "w" ? pc.t.toUpperCase() : pc.t;
+    }
+    rows.push(row + (empty || ""));
+  }
+  const at = (sq, c, t) => { const pc = pos.b[sqIdx(sq)]; return pc && pc.c === c && pc.t === t; };
+  const keep = { K: at("e1", "w", "k") && at("h1", "w", "r"), Q: at("e1", "w", "k") && at("a1", "w", "r"),
+    k: at("e8", "b", "k") && at("h8", "b", "r"), q: at("e8", "b", "k") && at("a8", "b", "r") };
+  const cr = [...castling].filter((ch) => keep[ch]).join("") || "-";
+  const m = p.moves[0];
+  const mover = before.b[sqIdx(m.slice(0, 2))];
+  const dbl = mover?.t === "p" && Math.abs(m.charCodeAt(3) - m.charCodeAt(1)) === 2;
+  const ep = dbl ? m[0] + (mover.c === "w" ? "3" : "6") : "-";
+  const reset = mover?.t === "p" || before.b[sqIdx(m.slice(2, 4))];
+  const fullmove = Number(full) + (before.turn === "b" ? 1 : 0);
+  return `${rows.join("/")} ${pos.turn} ${cr} ${ep} ${reset ? 0 : Number(half) + 1} ${fullmove}`;
+}
+
+function puzzlePgn(p) {
+  return [
+    `[Event "Puzzle ${p.lichessId ?? p.id} (${p.rating})"]`,
+    `[Site "${p.gameUrl ?? "https://lichess.org/training/" + (p.lichessId ?? p.id)}"]`,
+    `[SetUp "1"]`,
+    `[FEN "${startFen(p)}"]`,
+    "",
+    "*",
+    "",
+  ].join("\n");
+}
+
+async function copyPgn(btn) {
+  const text = puzzlePgn(cur.p);
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = el("textarea", {});
+    ta.value = text;
+    document.body.append(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  btn.textContent = "Copied - paste at lichess.org/paste";
+}
+
 function renderPuzzle() {
   const { p, idx } = cur;
   const r = results[p.id];
@@ -424,6 +483,7 @@ function renderPuzzle() {
         lastMoveWasMate ? el("button", { onclick: overrideMate }, "My move also mates") : null,
         idx + 1 < pack.puzzles.length ? el("button", { class: solving ? "" : "primary", onclick: () => openPuzzle(idx + 1) }, "Next puzzle") : null,
       ),
+      el("div", { class: "row" }, el("button", { onclick: (e) => copyPgn(e.currentTarget) }, "Copy PGN (puzzle start)")),
       p.gameUrl && navigator.onLine ? el("p", {}, el("a", { href: p.gameUrl, target: "_blank" }, "Source game")) : null,
       el("p", { class: "muted" }, r.synced ? "Synced to PC" : "Waiting to sync"),
     );
