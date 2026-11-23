@@ -11,6 +11,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseAttemptLog } from "../../src/utils/weakspot.ts";
+import { computeStats } from "./stats.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(here, "public");
@@ -47,7 +49,8 @@ function currentState() {
       } catch {}
     }
   }
-  return { packId: pack.id, done, pack };
+  const stats = existsSync(LOG) ? computeStats(parseAttemptLog(readFileSync(LOG, "utf8"))) : null;
+  return { packId: pack.id, done, pack, stats };
 }
 
 let lastPushed = "";
@@ -65,7 +68,7 @@ async function tick() {
     console.log(`${new Date().toISOString()} relay: +${added.length}, skipped ${skipped.length}`);
   }
   const state = currentState();
-  const key = JSON.stringify([state.packId, state.done]);
+  const key = JSON.stringify([state.packId, state.done, state.stats?.attempts]);
   if (key !== lastPushed) {
     await relay("PUT", "/state", state);
     lastPushed = key;
