@@ -4,6 +4,7 @@
   "compatibility_date": "2026-11-01",
   "workers_dev": true,
   "preview_urls": false,
+  "assets": { "directory": "./site" },
   "kv_namespaces": [{ "binding": "KV", "id": "d7858ada628b4432894003043800b5cd" }]
   // secrets: TOKEN (same value as public/relay.json), ALLOWED_ORIGIN (the app's https origin)
 }

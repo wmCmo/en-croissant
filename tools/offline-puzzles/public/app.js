@@ -33,6 +33,9 @@ let results = load(LS_RES, {});
 let syncNote = "";
 const LS_RELAY = "wsp-relay";
 let relayCfg = load(LS_RELAY, null);
+const LS_DEVKEY = "wsp-devkey";
+const LS_PAIR = "wsp-pair";
+let pairCode = null;
 
 // ---- chess helpers (positions come from the puzzle, so no legality check) ----
 const sqIdx = (s) => (s.charCodeAt(1) - 49) * 8 + (s.charCodeAt(0) - 97);
@@ -304,18 +307,72 @@ async function sync() {
 }
 
 // ---- Cloudflare relay (config from relay.json, kept in localStorage) ----
+// On the PC's own server relay.json carries the PC's token. When the app is
+// opened from the relay itself, relay.json has no token: this device then uses
+// its own key, which the PC approves once via a pairing code.
 async function loadRelayConfig() {
   try {
     const res = await fetch("relay.json", { cache: "no-cache", signal: AbortSignal.timeout(6000) });
     if (!res.ok) return;
     const cfg = await res.json();
-    if (cfg?.url && cfg?.token) {
-      relayCfg = cfg;
-      save(LS_RELAY, cfg);
+    if (!cfg?.url) return;
+    if (!cfg.token) {
+      cfg.token = deviceKey();
+      cfg.device = true;
     }
+    relayCfg = cfg;
+    save(LS_RELAY, cfg);
   } catch {
     // unreachable: keep the stored config
   }
+}
+
+function deviceKey() {
+  let k = load(LS_DEVKEY, null);
+  if (!k) {
+    k = (crypto.randomUUID() + crypto.randomUUID()).replaceAll("-", "");
+    save(LS_DEVKEY, k);
+  }
+  return k;
+}
+
+/** Sets pairCode while this device's key isn't approved yet. */
+async function checkPairing() {
+  if (!relayCfg?.device) return;
+  try {
+    const res = await relayFetch("/whoami");
+    if (res.ok) {
+      pairCode = null;
+      save(LS_PAIR, null);
+      return;
+    }
+    if (res.status !== 401) return;
+    const saved = load(LS_PAIR, null);
+    if (saved && Date.now() - saved.at < 50 * 60 * 1000) {
+      pairCode = saved.code;
+      return;
+    }
+    const r = await fetch(`${relayCfg.url}/pair`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: relayCfg.token }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!r.ok) return;
+    pairCode = (await r.json()).code;
+    save(LS_PAIR, { code: pairCode, at: Date.now() });
+  } catch {
+    // offline: try again next time
+  }
+}
+
+async function recheckPairing() {
+  await checkPairing();
+  if (!pairCode) {
+    await sync();
+    await pullDone();
+  }
+  render();
 }
 
 function relayFetch(path, init = {}) {
@@ -436,6 +493,15 @@ function renderList() {
       el("button", { class: "primary", disabled: next < 0, onclick: () => openPuzzle(next) }, next < 0 ? "All done" : `Next puzzle (#${next + 1})`),
       el("button", { disabled: pending === 0, onclick: sync }, `Sync now (${pending})`),
     ),
+    pairCode
+      ? el(
+          "div",
+          { class: "setup" },
+          el("p", {}, "Pair this device: send this code to Claude, then tap Check."),
+          el("div", { class: "status" }, pairCode),
+          el("div", { class: "row" }, el("button", { onclick: recheckPairing }, "Check")),
+        )
+      : null,
     el("p", { class: "muted", id: "sync-note" }, syncNote),
     el(
       "div",
@@ -608,6 +674,7 @@ async function boot() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(console.error);
   await loadPack();
   await loadRelayConfig();
+  await checkPairing();
   render();
   await sync();
   pullDone();

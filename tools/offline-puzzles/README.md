@@ -35,4 +35,5 @@ server every minute and pushes back the current pack and done map.
 
 - Config: `public/relay.json` `{ "url": "<worker url>", "token": "<secret>" }` (gitignored).
 - Worker secrets: `TOKEN` (same value) and `ALLOWED_ORIGIN` (the app's https origin).
-- Deploy: `cd relay && npx wrangler deploy`. Run on the PC: `node relay-sync.mjs`.
+- Deploy: `node relay/deploy.mjs` (copies the app shell into `relay/site/`). Run on the PC: `node relay-sync.mjs`.
+- The Worker also serves the app, for when the tailnet can't deliver even the app. A device opened there shows a pairing code; approve it on the PC with `node relay-sync.mjs approve <code>`.

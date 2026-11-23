@@ -6,6 +6,7 @@
 //   relay, so a device that can't reach the PC still gets new packs and skips
 //   puzzles another device did.
 // Config: public/relay.json { url, token } (gitignored; the app reads it too).
+// `node relay-sync.mjs approve <code>` pairs a device opened on the Worker.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -81,5 +82,11 @@ async function loop() {
   setTimeout(loop, EVERY_MS);
 }
 
-console.log(`relay-sync: ${url} every ${EVERY_MS / 1000}s`);
-loop();
+if (process.argv[2] === "approve") {
+  // pair a device that shows this code: node relay-sync.mjs approve 123456
+  const res = await relay("POST", "/approve", { code: process.argv[3] }).catch((e) => ({ error: e.message }));
+  console.log(res.ok ? "approved" : `not approved: ${res.error}`);
+} else {
+  console.log(`relay-sync: ${url} every ${EVERY_MS / 1000}s`);
+  loop();
+}
