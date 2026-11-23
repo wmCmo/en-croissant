@@ -25,3 +25,14 @@ Offline attempts are tagged `source: "offline"`: they count for your rating
 and theme stats, but their times (which include setting up the board) are
 not used for speed.
 Pieces: Staunty by sadsnake1, CC BY-NC-SA 4.0 (via lichess / En Croissant).
+
+## Cloudflare relay (for networks where the tailnet hangs)
+
+Some Wi-Fi networks drop Tailscale packets above ~1,200 bytes, so syncs hang.
+The app then syncs through a small Worker instead (`relay/`): it posts
+attempts there, and `relay-sync.mjs` on the PC pulls them through the local
+server every minute and pushes back the current pack and done map.
+
+- Config: `public/relay.json` `{ "url": "<worker url>", "token": "<secret>" }` (gitignored).
+- Worker secrets: `TOKEN` (same value) and `ALLOWED_ORIGIN` (the app's https origin).
+- Deploy: `cd relay && npx wrangler deploy`. Run on the PC: `node relay-sync.mjs`.

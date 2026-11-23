@@ -31,6 +31,8 @@ let pack = load(LS_PACK, null);
 /** puzzleId -> { status: "open"|"solved"|"failed", openedAt, firstMoveAt, attempt, synced } */
 let results = load(LS_RES, {});
 let syncNote = "";
+const LS_RELAY = "wsp-relay";
+let relayCfg = load(LS_RELAY, null);
 
 // ---- chess helpers (positions come from the puzzle, so no legality check) ----
 const sqIdx = (s) => (s.charCodeAt(1) - 49) * 8 + (s.charCodeAt(0) - 97);
@@ -275,6 +277,8 @@ async function sync() {
   if (syncing || pending.length === 0) return render();
   syncing = true;
   try {
+    // relay first: it works on networks where the tailnet hangs
+    if (await syncViaRelay(pending)) return;
     const res = await fetch("api/attempts", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -299,29 +303,92 @@ async function sync() {
   }
 }
 
-// Mark puzzles of this pack that another device already logged, so they
-// aren't served again here. Local finished results win.
-async function pullDone() {
+// ---- Cloudflare relay (config from relay.json, kept in localStorage) ----
+async function loadRelayConfig() {
   try {
-    const res = await fetch("api/done", { cache: "no-store", signal: AbortSignal.timeout(15000) });
+    const res = await fetch("relay.json", { cache: "no-cache", signal: AbortSignal.timeout(6000) });
     if (!res.ok) return;
-    const { packId, done } = await res.json();
-    if (packId !== pack?.id) return;
-    let changed = false;
-    for (const p of pack.puzzles) {
-      if (!(p.id in done)) continue;
-      const r = results[p.id];
-      if (r && r.status !== "open") continue;
-      results[p.id] = { status: done[p.id] ? "solved" : "failed", synced: true, elsewhere: true };
-      changed = true;
-    }
-    if (changed) {
-      save(LS_RES, results);
-      if (!cur) render();
+    const cfg = await res.json();
+    if (cfg?.url && cfg?.token) {
+      relayCfg = cfg;
+      save(LS_RELAY, cfg);
     }
   } catch {
-    // offline: nothing to learn
+    // unreachable: keep the stored config
   }
+}
+
+function relayFetch(path, init = {}) {
+  return fetch(`${relayCfg.url}${path}`, {
+    ...init,
+    headers: { authorization: `Bearer ${relayCfg.token}`, ...(init.headers ?? {}) },
+    cache: "no-store",
+    signal: AbortSignal.timeout(15000),
+  });
+}
+
+/** Hand pending attempts to the relay; the PC logs them within a minute. */
+async function syncViaRelay(pending) {
+  if (!relayCfg) return false;
+  try {
+    const res = await relayFetch("/attempts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ attempts: pending.map((r) => r.attempt) }),
+    });
+    if (!res.ok) return false;
+    const accepted = new Set((await res.json()).accepted);
+    for (const r of pending) if (accepted.has(r.attempt.puzzleId)) r.synced = true;
+    save(LS_RES, results);
+    syncNote = `Sent ${accepted.size} at ${new Date().toLocaleTimeString()} (the PC logs them within a minute)`;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function adoptPack(fresh) {
+  if (!fresh?.id || (pack && fresh.id <= pack.id)) return;
+  const done = pack ? pack.puzzles.filter((p) => results[p.id]?.attempt).length : 0;
+  pack = fresh;
+  save(LS_PACK, pack);
+  if (done) syncNote += ` · new pack of ${pack.puzzles.length} loaded`;
+}
+
+function applyDone(packId, done) {
+  if (!done || packId !== pack?.id) return;
+  let changed = false;
+  for (const p of pack.puzzles) {
+    if (!(p.id in done)) continue;
+    const r = results[p.id];
+    if (r && r.status !== "open") continue;
+    results[p.id] = { status: done[p.id] ? "solved" : "failed", synced: true, elsewhere: true };
+    changed = true;
+  }
+  if (changed) save(LS_RES, results);
+}
+
+// Mark puzzles of this pack that another device already logged, so they
+// aren't served again here (local finished results win), and pick up a new
+// pack. Relay first, then the PC directly.
+async function pullDone() {
+  let state = null;
+  if (relayCfg) {
+    try {
+      const res = await relayFetch("/state");
+      if (res.ok) state = await res.json();
+    } catch {}
+  }
+  if (!state?.packId) {
+    try {
+      const res = await fetch("api/done", { cache: "no-store", signal: AbortSignal.timeout(15000) });
+      if (res.ok) state = await res.json();
+    } catch {}
+  }
+  if (!state) return;
+  adoptPack(state.pack);
+  applyDone(state.packId, state.done);
+  if (!cur) render();
 }
 
 // ---- rendering ----
@@ -540,6 +607,7 @@ async function loadPack() {
 async function boot() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(console.error);
   await loadPack();
+  await loadRelayConfig();
   render();
   await sync();
   pullDone();
