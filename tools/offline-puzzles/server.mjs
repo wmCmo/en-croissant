@@ -20,7 +20,7 @@ const LOG =
   process.env.WEAKSPOT_LOG ??
   join(process.env.APPDATA ?? "", "org.encroissant.app", "weakspot", "puzzle-attempts.jsonl");
 const PACK = process.env.OFFLINE_PACK ?? join(publicDir, "pack.json");
-const PACK_ARGS = ["--count", process.env.PACK_COUNT ?? "40", "--focus", process.env.PACK_FOCUS ?? "10"];
+const PACK_ARGS = ["--count", process.env.PACK_COUNT ?? "40", "--focus", process.env.PACK_FOCUS ?? "20"];
 
 function readPack() {
   try {
