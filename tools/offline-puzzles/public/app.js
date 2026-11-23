@@ -279,6 +279,8 @@ async function sync() {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ attempts: pending.map((r) => r.attempt) }),
+      // a link that passes pings but drops big packets hangs forever otherwise
+      signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const { added, skipped, packId } = await res.json();
