@@ -128,6 +128,22 @@ createServer((req, res) => {
     });
     return;
   }
+  if (req.method === "GET" && url.pathname === "/api/done") {
+    // puzzles of the current pack already logged (from any device), so another
+    // device doesn't serve them again: { packId, done: { [puzzleId]: solved } }
+    const pack = readPack();
+    const inPack = new Set(pack?.puzzles.map((p) => p.id) ?? []);
+    const done = {};
+    if (existsSync(LOG)) {
+      for (const line of readFileSync(LOG, "utf8").split(/\r?\n/)) {
+        try {
+          const a = JSON.parse(line);
+          if (inPack.has(a.puzzleId) && !(a.puzzleId in done)) done[a.puzzleId] = a.solved;
+        } catch {}
+      }
+    }
+    return send(res, 200, { packId: pack?.id ?? null, done });
+  }
   if (req.method === "GET" && url.pathname === "/api/health") {
     return send(res, 200, { ok: true, logged: loggedIds().size });
   }

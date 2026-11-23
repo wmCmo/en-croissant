@@ -290,11 +290,37 @@ async function sync() {
     syncNote = `Synced ${added.length} at ${new Date().toLocaleTimeString()}`;
     // the server builds a new pack once the current one is fully logged
     if (packId && packId !== pack.id) await loadPack();
+    await pullDone();
   } catch {
     syncNote = `${pending.length} waiting to sync (no connection to PC)`;
   } finally {
     syncing = false;
     render();
+  }
+}
+
+// Mark puzzles of this pack that another device already logged, so they
+// aren't served again here. Local finished results win.
+async function pullDone() {
+  try {
+    const res = await fetch("api/done", { cache: "no-store", signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return;
+    const { packId, done } = await res.json();
+    if (packId !== pack?.id) return;
+    let changed = false;
+    for (const p of pack.puzzles) {
+      if (!(p.id in done)) continue;
+      const r = results[p.id];
+      if (r && r.status !== "open") continue;
+      results[p.id] = { status: done[p.id] ? "solved" : "failed", synced: true, elsewhere: true };
+      changed = true;
+    }
+    if (changed) {
+      save(LS_RES, results);
+      if (!cur) render();
+    }
+  } catch {
+    // offline: nothing to learn
   }
 }
 
@@ -469,6 +495,7 @@ function renderPuzzle() {
   } else {
     const ok = r.status === "solved";
     side.append(el("div", { class: `status ${ok ? "ok" : "bad"}` }, ok ? "Solved" : "Missed"));
+    if (r.elsewhere) side.append(el("p", { class: "muted" }, "Done on another device."));
     if (!ok && r.detail?.wrongText) {
       side.append(el("p", {}, "You played ", el("b", {}, r.detail.wrongText), "; the move was highlighted in green."));
     }
@@ -514,6 +541,7 @@ async function boot() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(console.error);
   await loadPack();
   render();
-  sync();
+  await sync();
+  pullDone();
 }
 boot();
