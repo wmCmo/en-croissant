@@ -632,7 +632,6 @@ function renderPuzzle() {
       el("p", {}, `${cur.me === "w" ? "Black" : "White"} just played `, el("b", {}, cur.firstMoveText), "."),
       el("p", { class: "muted" }, "Set it up on your board and calculate the whole line before entering a move. Tap a piece, then its square."),
       el("div", { class: "setup" }, setupText(cur.start)),
-      el("div", { class: "row" }, el("button", { onclick: () => finish(false, { reason: "solution" }) }, "Give up")),
     );
   } else {
     const ok = r.status === "solved";
