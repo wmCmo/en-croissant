@@ -50,3 +50,8 @@ while each of your moves is still the only good one. Puzzles queue in
 and the next pack puts up to 10 unlogged ones first ("yours"). `relay-sync.mjs`
 runs it hourly. Test on old games without saving:
 `node from-games.mjs --dry --archive <monthly archive url> --limit 2`.
+
+It also makes **blunder-check** cards (block "check"): positions where you were at
+least about equal, several moves kept that, and your move dropped your winning
+chances by 0.4+. Every move within 0.2 of the best (all legal moves analysed)
+is accepted, and afterwards the card shows your game move and its refutation.

@@ -185,6 +185,20 @@ function submit(uci) {
   const r = results[cur.p.id];
   r.firstMoveAt ??= Date.now();
   const expected = cur.p.moves[cur.ply];
+  if (cur.p.accept) {
+    // blunder check: any move that keeps the position counts
+    cur.pos = applyUci(cur.pos, uci);
+    cur.last = uci;
+    if (cur.p.accept.includes(uci)) return finish(true, { safeText: describeMove(cur.start, uci) });
+    cur.hint = expected;
+    return finish(false, {
+      reason: "wrong_move",
+      wrongMove: uci,
+      expectedMove: expected,
+      failedAtPly: cur.ply,
+      wrongText: describeMove(cur.start, uci),
+    });
+  }
   if (uci === expected) {
     cur.pos = applyUci(cur.pos, uci);
     cur.last = uci;
@@ -626,13 +640,14 @@ async function copyPgn(btn) {
 }
 
 function blockLabel(p) {
-  return p.block === "focus" ? " · focus" : p.block === "game" ? " · yours" : "";
+  return p.block === "focus" ? " · focus" : p.block === "game" ? " · yours" : p.block === "check" ? " · check" : "";
 }
 
 function renderPuzzle() {
   const { p, idx } = cur;
   const r = results[p.id];
-  $title.textContent = p.block === "game" ? `#${idx + 1} · your game` : `#${idx + 1} · ${p.rating}${blockLabel(p)}`;
+  $title.textContent =
+    p.block === "game" ? `#${idx + 1} · your game` : p.block === "check" ? `#${idx + 1} · blunder check` : `#${idx + 1} · ${p.rating}${blockLabel(p)}`;
   $back.hidden = false;
   const side = el("div", { class: "side" });
   const toMove = cur.me === "w" ? "White" : "Black";
@@ -640,7 +655,14 @@ function renderPuzzle() {
     side.append(
       el("div", { class: "status" }, `${toMove} to move`),
       el("p", {}, `${cur.me === "w" ? "Black" : "White"} just played `, el("b", {}, cur.firstMoveText), "."),
-      p.block === "game" ? el("p", { class: "muted" }, "From one of your own games: you missed this one there.") : null,
+      el(
+        "div",
+        {},
+        p.block === "game" ? el("p", { class: "muted" }, "From one of your own games: you missed this one there.") : null,
+        p.block === "check"
+          ? el("p", {}, `From one of your own games. You were better here (${p.winBefore}% to win). `, el("b", {}, "Find a safe move"), ": any move that keeps your advantage counts. Check what your opponent is threatening first.")
+          : null,
+      ),
       el("p", { class: "muted" }, "Set it up on your board and calculate the whole line before entering a move. Tap a piece, then its square."),
       el("div", { class: "setup" }, setupText(cur.start)),
     );
@@ -651,11 +673,23 @@ function renderPuzzle() {
     if (!ok && r.detail?.wrongText) {
       side.append(el("p", {}, "You played ", el("b", {}, r.detail.wrongText), "; the move was highlighted in green."));
     }
-    if (p.block === "game" && p.played) {
+    if (p.block === "check") {
+      if (r.detail?.safeText) side.append(el("p", {}, "Your move ", el("b", {}, r.detail.safeText), " keeps your advantage."));
+      const line = [];
+      let q = cur.start;
+      for (const m of p.refute) {
+        line.push(describeMove(q, m));
+        q = applyUci(q, m);
+      }
+      side.append(
+        el("p", {}, "In the game you played ", el("b", {}, line[0]), `, and it dropped from ${p.winBefore}% to ${p.winAfter}%: `, el("b", {}, line.slice(1).join(" ")), "."),
+        el("p", { class: "muted" }, `${p.accept.length} safe moves; the engine's best is highlighted in green.`),
+      );
+    } else if (p.block === "game" && p.played) {
       side.append(el("p", {}, "In the game you played ", el("b", {}, describeMove(cur.start, p.played)), "."));
     }
     side.append(el("div", {}, p.themes.map((t) => el("span", { class: "badge" }, t))));
-    const solving = cur.solPly != null && cur.solPly < p.moves.length;
+    const solving = !p.accept && cur.solPly != null && cur.solPly < p.moves.length;
     const lastMoveWasMate =
       !ok && r.detail?.failedAtPly === p.moves.length - 1 && p.themes.some((t) => t.startsWith("mate"));
     side.append(

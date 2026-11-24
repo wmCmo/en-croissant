@@ -82,24 +82,32 @@ class Engine {
     this.send("setoption name Threads value 2");
     this.send("setoption name Hash value 128");
     this.send("setoption name MultiPV value 2");
+    this.multipv = 2;
     this.send("isready");
     await this.until((l) => l === "readyok");
   }
-  /** Top two lines for a position: [{ move, wc, mate }], wc = winning chances for the side to move. */
-  async analyse(fen) {
+  /**
+   * Top `multipv` lines for a position: [{ move, pv, wc, mate }], wc = winning
+   * chances for the side to move.
+   */
+  async analyse(fen, multipv = 2, nodes = NODES) {
     const lines = new Map();
+    if (multipv !== this.multipv) {
+      this.send(`setoption name MultiPV value ${multipv}`);
+      this.multipv = multipv;
+    }
     this.send(`position fen ${fen}`);
-    this.send(`go nodes ${NODES}`);
+    this.send(`go nodes ${nodes}`);
     await this.until(
       (l) => l.startsWith("bestmove"),
       (l) => {
-        const m = l.match(/ multipv (\d+) .*score (cp|mate) (-?\d+).* pv (\S+)/);
-        if (m) lines.set(Number(m[1]), { kind: m[2], v: Number(m[3]), move: m[4] });
+        const m = l.match(/ multipv (\d+) .*score (cp|mate) (-?\d+).* pv (.+)$/);
+        if (m) lines.set(Number(m[1]), { kind: m[2], v: Number(m[3]), pv: m[4].trim().split(" ") });
       },
     );
     return [...lines.entries()]
       .sort((a, b) => a[0] - b[0])
-      .map(([, x]) => ({ move: x.move, mate: x.kind === "mate" ? x.v : null, wc: winChance(x) }));
+      .map(([, x]) => ({ move: x.pv[0], pv: x.pv, mate: x.kind === "mate" ? x.v : null, wc: winChance(x) }));
   }
   quit() {
     this.send("quit");
@@ -160,7 +168,12 @@ async function puzzlesFromGame(engine, game, rating, nextId) {
     const pos = positions[i];
     if (pos.turn !== me) continue;
     const lines = await engine.analyse(fenOf(pos));
-    if (!isOnlyMove(lines) || lines[0].move === moves[i]) continue;
+    if (lines[0]?.move === moves[i]) continue;
+    if (!isOnlyMove(lines)) {
+      const card = await blunderCheck(engine, positions, moves, i, lines);
+      if (card) found.push({ ...card, id: nextId + found.length, rating, gameUrl: game.url, gameEnded: new Date(game.end_time * 1000).toISOString() });
+      continue;
+    }
     const solution = await extend(engine, pos, lines[0].move);
     found.push({
       id: nextId + found.length,
@@ -178,6 +191,40 @@ async function puzzlesFromGame(engine, game, rating, nextId) {
     i += solution.length; // don't make a second puzzle out of the same idea
   }
   return found;
+}
+
+/**
+ * A blunder-check card: you were at least about equal, several moves kept
+ * that, and your move threw it away (winning chances down by DROP or more).
+ * Every move that keeps the position (within SAFE of the best) is accepted.
+ */
+const DROP = 0.4;
+const SAFE = 0.2;
+async function blunderCheck(engine, positions, moves, i, lines) {
+  const pos = positions[i];
+  const best = lines[0];
+  if (!best || best.wc < MIN_BEST) return null;
+  const after = positions[i + 1];
+  if (!after || after.isEnd()) return null;
+  const [reply] = await engine.analyse(fenOf(after), 1);
+  if (!reply || best.wc - -reply.wc < DROP) return null;
+  // every legal move, so any safe move can be accepted
+  const all = await engine.analyse(fenOf(pos), 64, NODES * 3);
+  const accept = all.filter((l) => l.wc >= best.wc - SAFE).map((l) => l.move);
+  if (accept.length === 0 || accept.includes(moves[i])) return null;
+  return {
+    fen: fenOf(positions[i - 1]),
+    moves: [moves[i - 1], best.move],
+    accept,
+    refute: [moves[i], ...reply.pv.slice(0, 3)],
+    themes: ["fromGame", "blunderCheck"],
+    block: "check",
+    pickedTheme: null,
+    lichessId: null,
+    played: moves[i],
+    winBefore: Math.round((best.wc + 1) * 50),
+    winAfter: Math.round((1 - reply.wc) * 50),
+  };
 }
 
 function isOnlyMove(lines) {
@@ -234,7 +281,7 @@ for (const game of games) {
   const t0 = Date.now();
   const ps = await puzzlesFromGame(engine, game, rating, ID_BASE + state.seq + 1);
   console.log(`${game.url}: ${ps.length} puzzle(s) in ${Math.round((Date.now() - t0) / 1000)}s`);
-  for (const p of ps) console.log(`  ${p.fen} | ${p.moves.join(" ")} | you played ${p.played}`);
+  for (const p of ps) console.log(`  [${p.block}] ${p.fen} | ${p.moves.join(" ")} | you played ${p.played}${p.accept ? ` | ${p.accept.length} safe: ${p.accept.join(",")} | refute ${p.refute.join(" ")} | win% ${p.winBefore}->${p.winAfter}` : ""}`);
   if (!args.dry) {
     state.puzzles.push(...ps);
     state.seq += ps.length;
