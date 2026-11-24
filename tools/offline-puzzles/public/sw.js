@@ -1,6 +1,6 @@
 // Network first (so a new pack or app version arrives when online), cache
 // fallback (so everything works on the plane). The API is never cached.
-const CACHE = "offline-puzzles-v3";
+const CACHE = "offline-puzzles-v4";
 const ASSETS = ["./", "index.html", "app.js", "manifest.webmanifest", "pieces.css", "icon-192.png", "icon-512.png", "pack.json"];
 
 self.addEventListener("install", (event) => {
@@ -19,6 +19,8 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || url.origin !== location.origin || url.pathname.includes("/api/")) return;
+  // authorised calls (relay /whoami, /state) go straight to the network with their headers
+  if (event.request.headers.has("authorization")) return;
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE);
