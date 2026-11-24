@@ -183,6 +183,17 @@ function askPromotion(done) {
 }
 
 function submit(uci) {
+  // illegal moves (moving into or ignoring check, impossible moves) are
+  // turned back, not scored: rules from chessops, as in En Croissant
+  if (window.ChessRules) {
+    const check = window.ChessRules.check(cur.p.fen, cur.p.moves.slice(0, cur.ply), uci);
+    if (!check.legal) {
+      cur.illegal = check.inCheck ? "Illegal: you're in check. Try again." : "Illegal move. Try again.";
+      cur.sel = null;
+      return render();
+    }
+  }
+  cur.illegal = null;
   const r = results[cur.p.id];
   r.firstMoveAt ??= Date.now();
   const expected = cur.p.moves[cur.ply];
@@ -666,6 +677,7 @@ function renderPuzzle() {
   if (r.status === "open") {
     side.append(
       el("div", { class: "status" }, `${toMove} to move`),
+      cur.illegal ? el("p", { class: "status bad" }, cur.illegal) : el("span"),
       cur.firstMoveText ? el("p", {}, `${cur.me === "w" ? "Black" : "White"} just played `, el("b", {}, cur.firstMoveText), ".") : el("div"),
       el(
         "div",
