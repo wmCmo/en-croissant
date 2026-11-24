@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAttemptLog } from "../../src/utils/weakspot.ts";
 import { computeStats } from "./stats.mjs";
+import { REVIEW_LOG, logReviews, readJsonl } from "./review.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(here, "public");
@@ -50,13 +51,24 @@ function currentState() {
       } catch {}
     }
   }
+  // review entries are done once reviewed after this pack was built
+  for (const r of readJsonl(REVIEW_LOG)) {
+    if (inPack.has(r.puzzleId) && r.ts >= pack.id && !(r.puzzleId in done)) done[r.puzzleId] = r.solved;
+  }
   const stats = existsSync(LOG) ? computeStats(parseAttemptLog(readFileSync(LOG, "utf8"))) : null;
   return { packId: pack.id, done, pack, stats };
 }
 
 let lastPushed = "";
 async function tick() {
-  const { attempts } = await relay("GET", "/pending");
+  const { attempts: all } = await relay("GET", "/pending");
+  // reviews go to their own log (they don't count toward the rating)
+  const reviews = all.filter((a) => Number.isInteger(a.reviewOf));
+  if (reviews.length) {
+    await relay("POST", "/ack", { ids: logReviews(reviews) });
+    console.log(`${new Date().toISOString()} relay: ${reviews.length} review(s) logged`);
+  }
+  const attempts = all.filter((a) => !Number.isInteger(a.reviewOf));
   if (attempts.length) {
     const res = await fetch(`${LOCAL}/api/attempts`, {
       method: "POST",
@@ -68,13 +80,39 @@ async function tick() {
     await relay("POST", "/ack", { ids: [...added, ...skipped].filter(Number.isInteger) });
     console.log(`${new Date().toISOString()} relay: +${added.length}, skipped ${skipped.length}`);
   }
-  const state = currentState();
-  const key = JSON.stringify([state.packId, state.done, state.stats?.attempts]);
+  let state = currentState();
+  // a device asked for a pack built around a theme
+  const request = await relay("GET", "/request");
+  if (request.theme) {
+    await makePack(["--theme", request.theme], `pack on ${request.theme}`);
+    await relay("DELETE", "/request");
+    state = currentState();
+  } else if (state.pack.puzzles.every((p) => p.id in state.done)) {
+    // the server only refills when every pack puzzle is in the main log, which
+    // review entries never are: refill here once everything is done
+    await makePack([], "refill");
+    state = currentState();
+  }
+  const key = JSON.stringify([state.packId, state.done, state.stats?.attempts, state.stats?.games?.length]);
   if (key !== lastPushed) {
     await relay("PUT", "/state", state);
     lastPushed = key;
     console.log(`${new Date().toISOString()} relay: state pushed (${Object.keys(state.done).length}/${state.pack.puzzles.length} done)`);
   }
+}
+
+function makePack(extra, label) {
+  return new Promise((resolve) =>
+    execFile(
+      process.execPath,
+      [join(here, "make-pack.mts"), "--count", process.env.PACK_COUNT ?? "40", "--focus", process.env.PACK_FOCUS ?? "20", ...extra, "--log", LOG, "--out", PACK],
+      { cwd: here, timeout: 120_000 },
+      (err, stdout) => {
+        console.log(`${new Date().toISOString()} ${label}: ${err ? err.message : stdout.trim().split("\n")[0]}`);
+        resolve();
+      },
+    ),
+  );
 }
 
 async function loop() {
@@ -93,7 +131,16 @@ function checkGames() {
     const out = (stdout || "").trim().split("\n").at(-1);
     if (err) console.error(`${new Date().toISOString()} games error: ${err.message} ${stderr}`);
     else console.log(`${new Date().toISOString()} games: ${out}`);
-    setTimeout(checkGames, GAMES_EVERY_MS);
+    // keep threat cards topped up and game ratings fresh too
+    execFile(process.execPath, [join(here, "threats.mjs")], { cwd: here, timeout: 30 * 60_000 }, (e2, so2, se2) => {
+      if (e2) console.error(`${new Date().toISOString()} threats error: ${e2.message} ${se2}`);
+      else console.log(`${new Date().toISOString()} ${(so2 || "").trim()}`);
+      execFile(process.execPath, [join(here, "game-ratings.mjs")], { cwd: here, timeout: 5 * 60_000 }, (e3, so3, se3) => {
+        if (e3) console.error(`${new Date().toISOString()} game ratings error: ${e3.message} ${se3}`);
+        else console.log(`${new Date().toISOString()} ${(so3 || "").trim()}`);
+        setTimeout(checkGames, GAMES_EVERY_MS);
+      });
+    });
   });
 }
 

@@ -83,8 +83,28 @@ export default {
     const who = await role(req, env);
     if (!who) return json(req, 401, { error: "unauthorised" });
     if (req.method === "GET" && pathname === "/whoami") return json(req, 200, { role: who });
-    const deviceAllowed = (req.method === "POST" && pathname === "/attempts") || (req.method === "GET" && pathname === "/state");
+    const deviceAllowed =
+      (req.method === "POST" && pathname === "/attempts") ||
+      (req.method === "GET" && pathname === "/state") ||
+      (req.method === "POST" && pathname === "/request");
     if (who !== "admin" && !deviceAllowed) return json(req, 403, { error: "forbidden" });
+
+    // device: ask the PC for a new pack built around a theme
+    if (req.method === "POST" && pathname === "/request") {
+      const body = await req.json().catch(() => null);
+      const theme = typeof body?.theme === "string" && /^[A-Za-z0-9]{2,40}$/.test(body.theme) ? body.theme : null;
+      if (!theme) return json(req, 400, { error: "bad theme" });
+      await env.KV.put("request", JSON.stringify({ theme, at: new Date().toISOString() }));
+      return json(req, 200, { ok: true });
+    }
+    // PC: read and clear a pending pack request
+    if (pathname === "/request" && (req.method === "GET" || req.method === "DELETE")) {
+      if (req.method === "DELETE") {
+        await env.KV.delete("request");
+        return json(req, 200, { ok: true });
+      }
+      return json(req, 200, (await env.KV.get("request", "json")) ?? {});
+    }
 
     // PC: approve a pairing code shown on a device
     if (req.method === "POST" && pathname === "/approve") {

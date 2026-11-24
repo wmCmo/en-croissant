@@ -12,6 +12,7 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { logReviews } from "./review.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(here, "public");
@@ -108,8 +109,11 @@ createServer((req, res) => {
         return send(res, 400, { error: "bad json" });
       }
       if (!Array.isArray(attempts)) return send(res, 400, { error: "attempts must be an array" });
+      // reviews of missed puzzles go to their own log (review.mjs)
+      const reviewed = logReviews(attempts.filter((a) => valid(a) && Number.isInteger(a.reviewOf)));
+      attempts = attempts.filter((a) => !Number.isInteger(a?.reviewOf));
       const ids = loggedIds();
-      const added = [];
+      const added = [...reviewed];
       const skipped = [];
       let lines = "";
       for (const a of attempts) {

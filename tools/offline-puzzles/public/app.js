@@ -124,7 +124,8 @@ function openPuzzle(idx) {
   const p = pack.puzzles[idx];
   const r = (results[p.id] ??= { status: "open", openedAt: Date.now(), synced: false });
   save(LS_RES, results);
-  const start = applyUci(parseFen(p.fen), p.moves[0]);
+  // threat cards start at the stored position, with no opponent move before it
+  const start = p.noSetup ? parseFen(p.fen) : applyUci(parseFen(p.fen), p.moves[0]);
   cur = {
     p,
     idx,
@@ -132,12 +133,12 @@ function openPuzzle(idx) {
     ply: 1,
     me: start.turn,
     sel: null,
-    last: p.moves[0],
+    last: p.noSetup ? null : p.moves[0],
     busy: false,
     hint: null,
     solPly: null,
     start,
-    firstMoveText: describeMove(parseFen(p.fen), p.moves[0]),
+    firstMoveText: p.noSetup ? null : describeMove(parseFen(p.fen), p.moves[0]),
   };
   if (r.status !== "open") showFinished();
   render();
@@ -248,6 +249,7 @@ function finish(solved, detail = {}) {
     lichessId: cur.p.lichessId,
     gameUrl: cur.p.gameUrl,
     source: "offline",
+    ...(cur.p.reviewOf != null ? { reviewOf: cur.p.reviewOf, stage: cur.p.stage } : {}),
   };
   r.synced = false;
   save(LS_RES, results);
@@ -285,7 +287,7 @@ function stepSolution() {
 
 function replay() {
   cur.pos = cur.start;
-  cur.last = cur.p.moves[0];
+  cur.last = cur.p.noSetup ? null : cur.p.moves[0];
   cur.solPly = 1;
   cur.hint = null;
   render();
@@ -532,6 +534,7 @@ function renderList() {
         )
       : null,
     el("p", { class: "muted", id: "sync-note" }, syncNote),
+    relayCfg ? themePicker() : null,
     el(
       "div",
       { class: "grid" },
@@ -584,6 +587,7 @@ function renderBoard() {
 // PGN can start there on Lichess. Castling rights drop when the king or rook
 // has left its square; en passant only after a double pawn push.
 function startFen(p) {
+  if (p.noSetup) return p.fen; // the card starts at the stored position
   const [, , castling = "-", , half = "0", full = "1"] = p.fen.split(" ");
   const before = parseFen(p.fen);
   const pos = applyUci(before, p.moves[0]);
@@ -640,26 +644,40 @@ async function copyPgn(btn) {
 }
 
 function blockLabel(p) {
-  return p.block === "focus" ? " · focus" : p.block === "game" ? " · yours" : p.block === "check" ? " · check" : "";
+  return { focus: " · focus", game: " · yours", check: " · check", review: " · review", threat: " · threat" }[p.block] ?? "";
 }
 
 function renderPuzzle() {
   const { p, idx } = cur;
   const r = results[p.id];
   $title.textContent =
-    p.block === "game" ? `#${idx + 1} · your game` : p.block === "check" ? `#${idx + 1} · blunder check` : `#${idx + 1} · ${p.rating}${blockLabel(p)}`;
+    p.block === "game"
+      ? `#${idx + 1} · your game`
+      : p.block === "check"
+        ? `#${idx + 1} · blunder check`
+        : p.block === "threat"
+          ? `#${idx + 1} · threat`
+          : p.block === "review"
+          ? `#${idx + 1} · review ${p.stage + 1}/3`
+          : `#${idx + 1} · ${p.rating}${blockLabel(p)}`;
   $back.hidden = false;
   const side = el("div", { class: "side" });
   const toMove = cur.me === "w" ? "White" : "Black";
   if (r.status === "open") {
     side.append(
       el("div", { class: "status" }, `${toMove} to move`),
-      el("p", {}, `${cur.me === "w" ? "Black" : "White"} just played `, el("b", {}, cur.firstMoveText), "."),
+      cur.firstMoveText ? el("p", {}, `${cur.me === "w" ? "Black" : "White"} just played `, el("b", {}, cur.firstMoveText), ".") : el("div"),
       el(
         "div",
         {},
         p.block === "game" ? el("p", { class: "muted" }, "From one of your own games: you missed this one there.") : null,
-        p.block === "check"
+        p.block === "threat" || p.origBlock === "threat"
+          ? el("p", {}, "Your opponent has a tactic ready if you're careless. ", el("b", {}, "Find a safe move"), ": any move that doesn't walk into it counts. First ask: what does my opponent attack, and what would my move stop defending?")
+          : null,
+        p.block === "review"
+          ? el("p", { class: "muted" }, `You missed this one before. Review ${p.stage + 1} of 3: ${p.stage < 2 ? `solve it and it comes back in ${[3, 7][p.stage]} days` : "solve it and it's learned"}; miss it and it comes back tomorrow. Reviews don't change your rating.`)
+          : null,
+        p.block === "check" || p.origBlock === "check"
           ? el("p", {}, `From one of your own games. You were better here (${p.winBefore}% to win). `, el("b", {}, "Find a safe move"), ": any move that keeps your advantage counts. Check what your opponent is threatening first.")
           : null,
       ),
@@ -673,7 +691,19 @@ function renderPuzzle() {
     if (!ok && r.detail?.wrongText) {
       side.append(el("p", {}, "You played ", el("b", {}, r.detail.wrongText), "; the move was highlighted in green."));
     }
-    if (p.block === "check") {
+    if (p.block === "threat" || p.origBlock === "threat") {
+      if (r.detail?.safeText) side.append(el("p", {}, "Your move ", el("b", {}, r.detail.safeText), " is safe."));
+      const line = [];
+      let q = cur.start;
+      for (const m of p.refute) {
+        line.push(describeMove(q, m));
+        q = applyUci(q, m);
+      }
+      side.append(
+        el("p", {}, "In the real game they played ", el("b", {}, line[0]), " and got punished: ", el("b", {}, line.slice(1).join(" ")), "."),
+        el("p", { class: "muted" }, `${p.accept.length} safe move${p.accept.length === 1 ? "" : "s"}; the engine's best is highlighted in green.`),
+      );
+    } else if (p.block === "check" || p.origBlock === "check") {
       if (r.detail?.safeText) side.append(el("p", {}, "Your move ", el("b", {}, r.detail.safeText), " keeps your advantage."));
       const line = [];
       let q = cur.start;
@@ -702,11 +732,40 @@ function renderPuzzle() {
         idx + 1 < pack.puzzles.length ? el("button", { class: solving ? "" : "primary", onclick: () => openPuzzle(idx + 1) }, "Next puzzle") : null,
       ),
       el("div", { class: "row" }, el("button", { onclick: (e) => copyPgn(e.currentTarget) }, "Copy PGN (puzzle start)")),
-      p.gameUrl && navigator.onLine ? el("p", {}, el("a", { href: p.gameUrl, target: "_blank" }, "Source game")) : null,
+      p.gameUrl && navigator.onLine ? el("p", {}, el("a", { href: p.gameUrl, target: "_blank" }, "Source game")) : el("span"),
       el("p", { class: "muted" }, r.synced ? "Synced to PC" : "Waiting to sync"),
     );
   }
   $main.append(el("div", { class: "board-wrap" }, renderBoard(), side));
+}
+
+// ---- theme picker: ask the PC (via the relay) for a pack built around one theme ----
+const PICK_THEMES = ["pin", "skewer", "fork", "capturingDefender", "discoveredAttack", "deflection", "attraction", "sacrifice", "defensiveMove", "quietMove", "rookEndgame", "pawnEndgame", "mateIn2", "mateIn3", "kingsideAttack", "backRankMate"];
+function themePicker() {
+  // your weakest themes first, then the rest
+  const weak = (stats?.themes ?? []).filter((t) => t.n >= 4).map((t) => t.theme);
+  const order = [...new Set([...weak, ...PICK_THEMES])];
+  const sel = el("select", { class: "theme-select" }, order.map((t) => el("option", { value: t }, prettyTheme(t))));
+  const btn = el("button", {
+    onclick: async () => {
+      btn.disabled = true;
+      try {
+        const res = await relayFetch("/request", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ theme: sel.value }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        syncNote = `Asked for a pack on ${prettyTheme(sel.value)}; it arrives in about a minute.`;
+        setTimeout(() => pullDone(), 75_000);
+        setTimeout(() => pullDone(), 150_000);
+      } catch {
+        syncNote = "Couldn't reach the relay; try again when online.";
+      }
+      render();
+    },
+  }, "New pack on this theme");
+  return el("div", { class: "row" }, sel, btn);
 }
 
 // ---- progress screen (numbers come from the PC: stats.mjs, via relay state) ----
@@ -795,6 +854,38 @@ function ratingChart(s) {
   return box;
 }
 
+/** Chess.com rating over your games of one time class (its own chart: different scale from puzzles). */
+function gameChart(games) {
+  const W = chartW(), H = 200, L = 44, R = 12, T = 12, B = 28;
+  const ys = games.map((g) => g[1]);
+  const lo = Math.floor((Math.min(...ys) - 30) / 50) * 50;
+  const hi = Math.ceil((Math.max(...ys) + 30) / 50) * 50;
+  const t0 = games[0][0], t1 = Math.max(games.at(-1)[0], t0 + 1);
+  const x = (t) => L + ((t - t0) / (t1 - t0)) * (W - L - R);
+  const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const g = sv("svg", { viewBox: `0 0 ${W} ${H}`, class: "chart", role: "img", "aria-label": `Chess.com rating over ${games.length} games, now ${ys.at(-1)}` });
+  for (let v = lo; v <= hi; v += 50) {
+    g.append(sv("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: C.grid, "stroke-width": 1 }));
+    g.append(sv("text", { x: L - 6, y: y(v) + 4, "text-anchor": "end", fill: C.dim, "font-size": 11 }, String(v)));
+  }
+  const fmt = (t) => new Date(t * 1000).toLocaleDateString(undefined, { year: "2-digit", month: "short" });
+  g.append(sv("text", { x: L, y: H - 8, fill: C.dim, "font-size": 11 }, fmt(t0)));
+  g.append(sv("text", { x: W - R, y: H - 8, "text-anchor": "end", fill: C.dim, "font-size": 11 }, fmt(t1)));
+  g.append(sv("polyline", { points: games.map((p) => `${x(p[0])},${y(p[1])}`).join(" "), fill: "none", stroke: C.now, "stroke-width": 2, "stroke-linejoin": "round" }));
+  for (const p of games) {
+    const win = p[3] === "win";
+    const draw = ["agreed", "repetition", "stalemate", "insufficient", "50move", "timevsinsufficient"].includes(p[3]);
+    const dot = win
+      ? sv("circle", { cx: x(p[0]), cy: y(p[1]), r: 4, fill: C.good, stroke: "var(--bg)", "stroke-width": 1.5 })
+      : draw
+        ? sv("circle", { cx: x(p[0]), cy: y(p[1]), r: 4, fill: C.dim, stroke: "var(--bg)", "stroke-width": 1.5 })
+        : sv("circle", { cx: x(p[0]), cy: y(p[1]), r: 4, fill: "none", stroke: C.bad, "stroke-width": 2 });
+    dot.append(sv("title", {}, `${new Date(p[0] * 1000).toLocaleDateString()} · ${p[1]} · ${win ? "win" : draw ? "draw" : "loss"}`));
+    g.append(dot);
+  }
+  return el("div", { class: "chart-box" }, g);
+}
+
 function radarChart(s) {
   const W = 460, H = 300, cx = 230, cy = 150, rad = 100, MIN = 0.5, MAX = 1.5;
   const n = s.radar.length;
@@ -869,6 +960,16 @@ function missBar(m) {
   return el("div", {}, bar, legend);
 }
 
+function gameSection(s) {
+  const rapid = (s.games ?? []).filter((g) => g[2] === "rapid");
+  if (rapid.length < 2) return [];
+  return [
+    el("h2", {}, "Chess.com rapid"),
+    el("p", { class: "muted" }, `Your game rating: ${rapid.at(-1)[1]} now, over ${rapid.length} games. Filled green = win, gray = draw, red ring = loss. Puzzle and game ratings use different scales, so watch each one's direction, not the gap.`),
+    gameChart(rapid),
+  ];
+}
+
 function renderProgress() {
   $title.textContent = "Progress";
   $back.hidden = false;
@@ -890,6 +991,7 @@ function renderProgress() {
     el("h2", {}, "Rating"),
     el("p", { class: "muted" }, "Line: your rating. Dots: each puzzle's difficulty, filled = solved, ring = missed. Tap for details."),
     ratingChart(s),
+    ...gameSection(s),
     el("h2", {}, "Skills"),
     el(
       "div",

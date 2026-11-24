@@ -15,7 +15,6 @@
 //   node from-games.mjs --dry --archive <url of a monthly archive> --limit 1
 //                                            test on old games, saving nothing
 
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +24,7 @@ import { makeFen, parseFen } from "chessops/fen";
 import { parsePgn, startingPosition } from "chessops/pgn";
 import { parseSan } from "chessops/san";
 import { parseAttemptLog, playerRating } from "../../src/utils/weakspot.ts";
+import { ENGINE, Engine, NODES } from "./engine.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const STATE = join(here, "game-puzzles.json");
@@ -32,10 +32,6 @@ const USER = process.env.CHESSCOM_USER ?? "wmcmo";
 const LOG =
   process.env.WEAKSPOT_LOG ??
   join(process.env.APPDATA ?? "", "org.encroissant.app", "weakspot", "puzzle-attempts.jsonl");
-const ENGINE =
-  process.env.STOCKFISH ??
-  join(process.env.APPDATA ?? "", "org.encroissant.app", "engines", "stockfish", "stockfish-windows-x86-64-avx2.exe");
-const NODES = Number(process.env.PUZZLE_NODES ?? 1_000_000); // nodes, not time: same quality when the CPU is busy
 const GAP = 0.4; // winning-chance gap (on a -1..1 scale) between best and second best
 const MIN_BEST = -0.15; // the only move must reach at least about equal
 const MAX_PLIES = 12;
@@ -44,80 +40,6 @@ const ID_BASE = 900_000_000; // far above Lichess puzzle ids
 const args = parseArgs({
   options: { dry: { type: "boolean", default: false }, archive: { type: "string" }, limit: { type: "string" } },
 }).values;
-
-// ---- engine (UCI over stdin/stdout) ----
-class Engine {
-  constructor(path) {
-    this.p = spawn(path, [], { stdio: ["pipe", "pipe", "ignore"] });
-    this.buf = "";
-    this.waiters = [];
-    this.p.stdout.on("data", (d) => {
-      this.buf += d;
-      let i;
-      while ((i = this.buf.indexOf("\n")) >= 0) {
-        const line = this.buf.slice(0, i).trim();
-        this.buf = this.buf.slice(i + 1);
-        for (const w of [...this.waiters]) w(line);
-      }
-    });
-  }
-  send(cmd) {
-    this.p.stdin.write(`${cmd}\n`);
-  }
-  until(pred, onLine = () => {}) {
-    return new Promise((resolve) => {
-      const w = (line) => {
-        onLine(line);
-        if (pred(line)) {
-          this.waiters = this.waiters.filter((x) => x !== w);
-          resolve(line);
-        }
-      };
-      this.waiters.push(w);
-    });
-  }
-  async init() {
-    this.send("uci");
-    await this.until((l) => l === "uciok");
-    this.send("setoption name Threads value 2");
-    this.send("setoption name Hash value 128");
-    this.send("setoption name MultiPV value 2");
-    this.multipv = 2;
-    this.send("isready");
-    await this.until((l) => l === "readyok");
-  }
-  /**
-   * Top `multipv` lines for a position: [{ move, pv, wc, mate }], wc = winning
-   * chances for the side to move.
-   */
-  async analyse(fen, multipv = 2, nodes = NODES) {
-    const lines = new Map();
-    if (multipv !== this.multipv) {
-      this.send(`setoption name MultiPV value ${multipv}`);
-      this.multipv = multipv;
-    }
-    this.send(`position fen ${fen}`);
-    this.send(`go nodes ${nodes}`);
-    await this.until(
-      (l) => l.startsWith("bestmove"),
-      (l) => {
-        const m = l.match(/ multipv (\d+) .*score (cp|mate) (-?\d+).* pv (.+)$/);
-        if (m) lines.set(Number(m[1]), { kind: m[2], v: Number(m[3]), pv: m[4].trim().split(" ") });
-      },
-    );
-    return [...lines.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([, x]) => ({ move: x.pv[0], pv: x.pv, mate: x.kind === "mate" ? x.v : null, wc: winChance(x) }));
-  }
-  quit() {
-    this.send("quit");
-  }
-}
-
-function winChance({ kind, v }) {
-  if (kind === "mate") return v > 0 ? 1 : -1;
-  return 2 / (1 + Math.exp(-0.00368208 * v)) - 1;
-}
 
 const fenOf = (pos) => makeFen(pos.toSetup());
 const play = (pos, uci) => {

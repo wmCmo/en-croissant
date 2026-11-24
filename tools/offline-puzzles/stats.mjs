@@ -1,6 +1,7 @@
 // Progress numbers for the app's Progress screen, worked out on the PC from
 // the whole attempt log and sent to devices with the pack (relay state).
 
+import { readGameRatings } from "./game-ratings.mjs";
 import { BROAD_THEMES, META_THEMES, START_RATING, buildModel, expectedScore, speedFactor } from "../../src/utils/weakspot.ts";
 
 // Radar groups: Lichess themes folded into six skills.
@@ -78,6 +79,8 @@ export function computeStats(attempts) {
     split: { start: early.at(-1)?.ts ?? null },
     radar,
     themes,
+    // Chess.com games: [endTimeSecs, yourRating, timeClass, result]
+    games: readGameRatings(),
     misses: {
       total: points.filter((p) => !p.solved).length,
       firstMove: misses.filter((p) => p.failedAtPly === 1).length,

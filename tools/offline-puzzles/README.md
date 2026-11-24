@@ -55,3 +55,21 @@ It also makes **blunder-check** cards (block "check"): positions where you were 
 least about equal, several moves kept that, and your move dropped your winning
 chances by 0.4+. Every move within 0.2 of the best (all legal moves analysed)
 is accepted, and afterwards the card shows your game move and its refutation.
+
+## Reviews, threat cards, theme packs, game ratings
+
+- **Reviews** (`review.mjs`): a missed puzzle comes back after 1 day, then 3
+  and 7 days once solved; a missed review restarts at 1 day. Review attempts
+  carry `reviewOf` and go to `review-attempts.jsonl`, so they never touch the
+  rating. Up to 8 due reviews lead each pack; relay-sync refills packs that
+  contain reviews (the server only refills on the main log).
+- **Threat cards** (`threats.mjs`): Lichess puzzles from the side about to make
+  the mistake; any move within 0.2 of the best counts. `threat-cards.json`
+  (gitignored) is kept at 15; 5 go in each pack.
+- **Theme packs**: the app's "New pack on this theme" posts `/request` to the
+  relay; relay-sync builds a pack with `make-pack.mts --theme <name>` (30 focus
+  puzzles on it).
+- **Game ratings** (`game-ratings.mjs`): Chess.com ratings for 24 months in
+  `game-ratings.json` (gitignored), shown on the Progress screen.
+- **Auto-start**: a logon task runs a launcher outside this repo that starts
+  server.mjs, the tailnet HTTPS front and relay-sync when they aren't running.
