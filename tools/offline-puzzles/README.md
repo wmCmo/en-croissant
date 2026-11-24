@@ -37,3 +37,16 @@ server every minute and pushes back the current pack and done map.
 - Worker secrets: `TOKEN` (same value) and `ALLOWED_ORIGIN` (the app's https origin).
 - Deploy: `node relay/deploy.mjs` (copies the app shell into `relay/site/`). Run on the PC: `node relay-sync.mjs`.
 - The Worker also serves the app, for when the tailnet can't deliver even the app. A device opened there shows a pairing code; approve it on the PC with `node relay-sync.mjs approve <code>`.
+
+## Puzzles from your own games
+
+`from-games.mjs` downloads new Chess.com games (user `wmcmo`, override with
+`CHESSCOM_USER`) and has Stockfish (1M nodes, top two moves) look at every
+position where it was your move. A position becomes a puzzle when exactly one
+move was good (winning chances beat the second best by 0.4 on a -1..1 scale),
+it reaches at least about equal, and you didn't play it. The line continues
+while each of your moves is still the only good one. Puzzles queue in
+`game-puzzles.json` (gitignored; its `since` starts at the first run's day),
+and the next pack puts up to 10 unlogged ones first ("yours"). `relay-sync.mjs`
+runs it hourly. Test on old games without saving:
+`node from-games.mjs --dry --archive <monthly archive url> --limit 2`.

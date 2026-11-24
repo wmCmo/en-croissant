@@ -8,6 +8,7 @@
 // Config: public/relay.json { url, token } (gitignored; the app reads it too).
 // `node relay-sync.mjs approve <code>` pairs a device opened on the Worker.
 
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -85,6 +86,17 @@ async function loop() {
   setTimeout(loop, EVERY_MS);
 }
 
+// puzzles from your own Chess.com games, checked hourly (from-games.mjs)
+const GAMES_EVERY_MS = Number(process.env.GAMES_EVERY_MS ?? 3_600_000);
+function checkGames() {
+  execFile(process.execPath, [join(here, "from-games.mjs")], { cwd: here, timeout: 30 * 60_000 }, (err, stdout, stderr) => {
+    const out = (stdout || "").trim().split("\n").at(-1);
+    if (err) console.error(`${new Date().toISOString()} games error: ${err.message} ${stderr}`);
+    else console.log(`${new Date().toISOString()} games: ${out}`);
+    setTimeout(checkGames, GAMES_EVERY_MS);
+  });
+}
+
 if (process.argv[2] === "approve") {
   // pair a device that shows this code: node relay-sync.mjs approve 123456
   const res = await relay("POST", "/approve", { code: process.argv[3] }).catch((e) => ({ error: e.message }));
@@ -92,4 +104,5 @@ if (process.argv[2] === "approve") {
 } else {
   console.log(`relay-sync: ${url} every ${EVERY_MS / 1000}s`);
   loop();
+  checkGames();
 }

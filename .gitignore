@@ -32,5 +32,6 @@ src-tauri/gen/
 # personal offline puzzle pack
 tools/offline-puzzles/public/pack.json
 tools/offline-puzzles/public/relay.json
+tools/offline-puzzles/game-puzzles.json
 tools/offline-puzzles/relay/.wrangler/
 tools/offline-puzzles/relay/site/

@@ -526,7 +526,7 @@ function renderList() {
         return el(
           "button",
           { class: `tile ${r?.status ?? ""}`, onclick: () => openPuzzle(i) },
-          el("div", { class: "n" }, `#${i + 1}${p.block === "focus" ? " · focus" : ""}`),
+          el("div", { class: "n" }, `#${i + 1}${blockLabel(p)}`),
           el("div", { class: "muted" }, `${p.rating}${r?.status === "solved" ? " ✓" : r?.status === "failed" ? " ✗" : ""}${r?.attempt && !r.synced ? " ⇡" : ""}`),
         );
       }),
@@ -625,10 +625,14 @@ async function copyPgn(btn) {
   btn.textContent = "Copied - paste at lichess.org/paste";
 }
 
+function blockLabel(p) {
+  return p.block === "focus" ? " · focus" : p.block === "game" ? " · yours" : "";
+}
+
 function renderPuzzle() {
   const { p, idx } = cur;
   const r = results[p.id];
-  $title.textContent = `#${idx + 1} · ${p.rating}${p.block === "focus" ? " · focus" : ""}`;
+  $title.textContent = p.block === "game" ? `#${idx + 1} · your game` : `#${idx + 1} · ${p.rating}${blockLabel(p)}`;
   $back.hidden = false;
   const side = el("div", { class: "side" });
   const toMove = cur.me === "w" ? "White" : "Black";
@@ -636,6 +640,7 @@ function renderPuzzle() {
     side.append(
       el("div", { class: "status" }, `${toMove} to move`),
       el("p", {}, `${cur.me === "w" ? "Black" : "White"} just played `, el("b", {}, cur.firstMoveText), "."),
+      p.block === "game" ? el("p", { class: "muted" }, "From one of your own games: you missed this one there.") : null,
       el("p", { class: "muted" }, "Set it up on your board and calculate the whole line before entering a move. Tap a piece, then its square."),
       el("div", { class: "setup" }, setupText(cur.start)),
     );
@@ -645,6 +650,9 @@ function renderPuzzle() {
     if (r.elsewhere) side.append(el("p", { class: "muted" }, "Done on another device."));
     if (!ok && r.detail?.wrongText) {
       side.append(el("p", {}, "You played ", el("b", {}, r.detail.wrongText), "; the move was highlighted in green."));
+    }
+    if (p.block === "game" && p.played) {
+      side.append(el("p", {}, "In the game you played ", el("b", {}, describeMove(cur.start, p.played)), "."));
     }
     side.append(el("div", {}, p.themes.map((t) => el("span", { class: "badge" }, t))));
     const solving = cur.solPly != null && cur.solPly < p.moves.length;

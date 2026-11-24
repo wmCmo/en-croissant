@@ -30,6 +30,13 @@ const attempts = existsSync(args.log) ? parseAttemptLog(readFileSync(args.log, "
 const model = buildModel(attempts);
 const seen = new Set(attempts.map((a) => a.puzzleId));
 
+// puzzles from your own games (from-games.mjs) that aren't logged yet go first
+const GAME_MAX = 10;
+const gameQueuePath = join(here, "game-puzzles.json");
+const gameQueue = existsSync(gameQueuePath) ? JSON.parse(readFileSync(gameQueuePath, "utf8")).puzzles : [];
+const gamePuzzles = gameQueue.filter((p: { id: number }) => !seen.has(p.id)).slice(0, Math.min(GAME_MAX, count));
+const gameCount = gamePuzzles.length;
+
 const db = new DatabaseSync(args.db, { readOnly: true });
 const linksPath = args.db.replace(/\.[^.\\/]+$/, ".links.sqlite");
 const links = existsSync(linksPath) ? new DatabaseSync(linksPath, { readOnly: true }) : null;
@@ -53,9 +60,9 @@ const themesOf = db.prepare(
 const linkOf = links?.prepare("SELECT lichess_id, game_url FROM links WHERE puzzle_id = ?");
 
 type Row = { id: number; fen: string; moves: string; rating: number };
-const puzzles = [];
-for (let i = 0; i < count; i++) {
-  const mode = i < count - focusCount ? "adaptive" : "focus";
+const puzzles: any[] = [...gamePuzzles];
+for (let i = 0; i < count - gameCount; i++) {
+  const mode = i < count - gameCount - focusCount ? "adaptive" : "focus";
   const pick = pickNext(model, mode, available);
   const [lo, hi] = pick.range;
   const rows = (pick.theme ? byTheme.all(pick.theme, lo, hi) : anyTheme.all(lo, hi)) as Row[];
@@ -90,7 +97,7 @@ writeFileSync(args.out, JSON.stringify(pack));
 const themes: Record<string, number> = {};
 for (const p of puzzles) if (p.pickedTheme) themes[p.pickedTheme] = (themes[p.pickedTheme] ?? 0) + 1;
 console.log(
-  `pack ${pack.id}: ${puzzles.length} puzzles (${count - focusCount} adaptive, ${focusCount} focus), ` +
+  `pack ${pack.id}: ${puzzles.length} puzzles (${gameCount} from your games, ${Math.max(0, count - gameCount - focusCount)} adaptive, ${focusCount} focus), ` +
     `your rating ${model.rating}, ratings ${Math.min(...puzzles.map((p) => p.rating))}-${Math.max(...puzzles.map((p) => p.rating))}, ` +
     `linked ${puzzles.filter((p) => p.gameUrl).length}`,
 );
